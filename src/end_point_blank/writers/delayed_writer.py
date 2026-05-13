@@ -22,7 +22,7 @@ class DelayedWriter:
     """
 
     def __init__(self, url_key: str) -> None:
-        self._queue: queue.Queue = queue.Queue()
+        self._queue: queue.Queue = queue.Queue(maxsize=500)
         self._direct = DirectWriter(url_key)
         worker_count = Configuration().worker_count
         self._workers: List[threading.Thread] = []
@@ -32,9 +32,12 @@ class DelayedWriter:
             self._workers.append(t)
 
     def write(self, payloads: List[Dict[str, Any]]) -> None:
-        """Enqueues *payloads* for asynchronous delivery."""
+        """Enqueues *payloads* for asynchronous delivery, dropping if the queue is full."""
         for payload in payloads:
-            self._queue.put(payload)
+            try:
+                self._queue.put_nowait(payload)
+            except queue.Full:
+                logger.warning("DelayedWriter queue full, dropping payload")
 
     def _process(self) -> None:
         while True:

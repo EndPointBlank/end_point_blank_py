@@ -40,11 +40,15 @@ class AuthenticationCache:
         if credentials is None:
             return
         ttl = Configuration().cache_ttl
+        now = datetime.now(tz=timezone.utc)
         with self._lock:
             self._cache[key] = {
                 "credentials": credentials,
-                "expired_at": datetime.now(tz=timezone.utc) + timedelta(seconds=ttl),
+                "expired_at": now + timedelta(seconds=ttl),
             }
+            expired = [k for k, e in self._cache.items() if e["expired_at"] <= now]
+            for k in expired:
+                del self._cache[k]
 
     def retrieve(self, key: str) -> Optional[Any]:
         """
@@ -54,8 +58,11 @@ class AuthenticationCache:
         """
         with self._lock:
             entry = self._cache.get(key)
-            if entry and entry["expired_at"] > datetime.now(tz=timezone.utc):
+            if entry is None:
+                return None
+            if entry["expired_at"] > datetime.now(tz=timezone.utc):
                 return entry["credentials"]
+            del self._cache[key]
             return None
 
     def exists(self, key: str) -> bool:

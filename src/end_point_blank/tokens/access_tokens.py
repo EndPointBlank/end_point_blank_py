@@ -38,6 +38,14 @@ class AccessTokens:
                 self._locks[hostname] = threading.Lock()
             return self._locks[hostname]
 
+    def _evict_expired(self) -> None:
+        now = datetime.now(tz=timezone.utc)
+        with self._meta_lock:
+            expired = [k for k, e in self._tokens.items() if e["expired_at"] <= now]
+            for k in expired:
+                self._tokens.pop(k, None)
+                self._locks.pop(k, None)
+
     def token(self, hostname: str) -> Optional[str]:
         """
         Returns a valid access token for *hostname*, fetching a new one if needed.
@@ -61,8 +69,10 @@ class AccessTokens:
                     "token": payload["token"],
                     "expired_at": self._parse_expiry(payload.get("expired_at")),
                 }
+                self._evict_expired()
                 return payload["token"]
             else:
+                self._tokens.pop(key, None)
                 error = payload.get("error") if payload else "unknown error"
                 logger.error("Failed to generate access token for %s: %s", hostname, error)
                 return None
