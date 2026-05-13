@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -12,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 _local = threading.local()
 _TIMEOUT = 15  # seconds
-_RETRY_DELAYS = [0.5, 1.5, 3.0]  # seconds between attempts 1→2, 2→3, 3→4
 
 
 def _session() -> requests.Session:
@@ -22,18 +20,22 @@ def _session() -> requests.Session:
     return _local.session
 
 
+def _new_session() -> requests.Session:
+    """Replace the current thread's session with a fresh one."""
+    _local.session = requests.Session()
+    return _local.session
+
+
 def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.Response]:
     """
     POST *body* as JSON to *url* with *auth_header*.
 
-    Retries up to 3 times with exponential backoff on connection errors.
+    On ConnectionError the session is recreated (to flush stale keep-alive
+    connections) and the request is retried once before giving up.
 
     :returns: The :class:`requests.Response`, or ``None`` on network error.
     """
-    last_exc: Optional[Exception] = None
-    for attempt, delay in enumerate([0.0] + _RETRY_DELAYS):
-        if delay:
-            time.sleep(delay)
+    for attempt in range(2):
         try:
             return _session().post(
                 url,
@@ -42,11 +44,13 @@ def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.
                 timeout=_TIMEOUT,
             )
         except requests.exceptions.ConnectionError as exc:
-            last_exc = exc
-            logger.warning("HTTP POST to %s failed (attempt %d/4): %s", url, attempt + 1, exc)
+            if attempt == 0:
+                logger.warning("HTTP POST to %s failed, retrying with fresh connection: %s", url, exc)
+                _new_session()
+            else:
+                logger.error("HTTP POST to %s failed: %s", url, exc)
         except requests.RequestException as exc:
             logger.error("HTTP POST to %s failed: %s", url, exc)
             return None
 
-    logger.error("HTTP POST to %s failed after 4 attempts: %s", url, last_exc)
     return None
