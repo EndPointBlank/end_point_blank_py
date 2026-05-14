@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List
 
 from ..commands.endpoint_update import EndpointUpdate
 
 logger = logging.getLogger(__name__)
+
+_DJANGO_PARAM_RE = re.compile(r"<(?:[^:>]+:)?([^>]+)>")
+
+
+def _normalize_path(path: str) -> str:
+    """Convert Django path syntax to Rails-style: <int:id> -> {id}, <slug:id> -> {id}."""
+    return _DJANGO_PARAM_RE.sub(r"{\1}", path)
 
 
 def register_django_endpoints() -> None:
@@ -46,7 +54,7 @@ def _collect_endpoints(resolver, prefix: str = "") -> List[Dict[str, Any]]:
                 versions = getattr(callback, "_epb_versions", {})
                 # Django doesn't encode HTTP methods in URLPattern; use ANY
                 endpoints.append({
-                    "path": "/" + path.lstrip("/"),
+                    "path": _normalize_path("/" + path.lstrip("/")),
                     "action": "ANY",
                     "versions": versions,
                 })

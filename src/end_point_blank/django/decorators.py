@@ -2,9 +2,21 @@ from __future__ import annotations
 
 import functools
 import logging
+import re
 from typing import Callable
 
 logger = logging.getLogger(__name__)
+
+_DJANGO_PARAM_RE = re.compile(r"<(?:[^:>]+:)?([^>]+)>")
+
+
+def _route_path(request) -> str:
+    """Return the normalized route pattern (e.g. /classes/{class_id}/students)."""
+    resolver_match = getattr(request, "resolver_match", None)
+    if resolver_match and resolver_match.route:
+        normalized = _DJANGO_PARAM_RE.sub(r"{\1}", resolver_match.route)
+        return "/" + normalized.lstrip("/")
+    return request.path
 
 
 def authenticated(view_func: Callable) -> Callable:
@@ -26,7 +38,7 @@ def authenticated(view_func: Callable) -> Callable:
 
         environ = request.environ
         version = VersionFinder().find(environ)
-        response = BasicAuthenticate.authenticate(environ, request.path, version)
+        response = BasicAuthenticate.authenticate(environ, _route_path(request), version)
 
         if response is None or response.status_code != 201:
             error_msg = "Authentication service unavailable"
@@ -61,7 +73,7 @@ def authorized(view_func: Callable) -> Callable:
 
         environ = request.environ
         version = VersionFinder().find(environ)
-        response = EndpointAuthorize.authorize(environ, request.path, version)
+        response = EndpointAuthorize.authorize(environ, _route_path(request), version)
 
         if response is None or response.status_code != 201:
             error_msg = "Authorization service unavailable"
