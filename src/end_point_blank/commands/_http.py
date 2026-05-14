@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import ssl
+import threading
 from typing import Any, Dict, Optional
 
 import requests
@@ -11,6 +12,7 @@ from requests.adapters import HTTPAdapter
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 15  # seconds
+_local = threading.local()
 
 
 class _SSLAdapter(HTTPAdapter):
@@ -37,23 +39,31 @@ class _SSLAdapter(HTTPAdapter):
         super().init_poolmanager(*args, **kwargs)
 
 
+def _session() -> requests.Session:
+    """Return a per-thread Session with the tolerant SSL adapter mounted."""
+    if not hasattr(_local, "session"):
+        s = requests.Session()
+        s.mount("https://", _SSLAdapter())
+        _local.session = s
+    return _local.session
+
+
 def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.Response]:
     """
     POST *body* as JSON to *url* with *auth_header*.
 
-    Uses a fresh connection per call with a tolerant SSL context.
+    Uses a per-thread persistent session (amortising TLS handshake cost)
+    with an SSL adapter that tolerates missing close_notify alerts.
 
     :returns: The :class:`requests.Response`, or ``None`` on network error.
     """
     try:
-        with requests.Session() as session:
-            session.mount("https://", _SSLAdapter())
-            return session.post(
-                url,
-                json=body,
-                headers={"Authorization": auth_header, "Content-Type": "application/json"},
-                timeout=_TIMEOUT,
-            )
+        return _session().post(
+            url,
+            json=body,
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            timeout=_TIMEOUT,
+        )
     except requests.RequestException as exc:
         logger.error("HTTP POST to %s failed: %s", url, exc)
         return None
