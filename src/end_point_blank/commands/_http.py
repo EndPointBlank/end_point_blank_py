@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import ssl
 import threading
+import time
 from typing import Any, Dict, Optional
 
 import requests
@@ -57,13 +58,16 @@ def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.
 
     :returns: The :class:`requests.Response`, or ``None`` on network error.
     """
-    try:
-        return _session().post(
-            url,
-            json=body,
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            timeout=_TIMEOUT,
-        )
-    except requests.RequestException as exc:
-        logger.error("HTTP POST to %s failed: %s", url, exc)
-        return None
+    for attempt in range(1, 4):
+        try:
+            return _session().post(
+                url,
+                json=body,
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                timeout=_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            logger.error("HTTP POST to %s failed (attempt %d/3): %s", url, attempt, exc)
+            if attempt < 3:
+                time.sleep(0.5)
+    return None
