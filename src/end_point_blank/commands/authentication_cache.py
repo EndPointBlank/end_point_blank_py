@@ -7,12 +7,18 @@ from typing import Any, Dict, List, Optional
 from ..configuration import Configuration
 
 
+_MAX_SIZE = 1000
+
+
 class AuthenticationCache:
     """
     Thread-safe singleton cache for storing authentication credentials.
 
-    Entries expire after :attr:`~end_point_blank.configuration.Configuration.cache_ttl`
-    seconds (default: 300).
+    Capped at ``_MAX_SIZE`` entries. When full, expired entries are evicted
+    first; if still at capacity the oldest entry (by insertion order) is
+    removed. Entries expire after
+    :attr:`~end_point_blank.configuration.Configuration.cache_ttl` seconds
+    (default: 300).
 
     Equivalent to the Ruby gem's ``EndPointBlank::Commands::AuthenticationCache``.
     """
@@ -42,13 +48,17 @@ class AuthenticationCache:
         ttl = Configuration().cache_ttl
         now = datetime.now(tz=timezone.utc)
         with self._lock:
+            # Evict expired entries first
+            expired = [k for k, e in self._cache.items() if e["expired_at"] <= now]
+            for k in expired:
+                del self._cache[k]
+            # Evict oldest insertion(s) if still at capacity
+            while len(self._cache) >= _MAX_SIZE:
+                self._cache.pop(next(iter(self._cache)))
             self._cache[key] = {
                 "credentials": credentials,
                 "expired_at": now + timedelta(seconds=ttl),
             }
-            expired = [k for k, e in self._cache.items() if e["expired_at"] <= now]
-            for k in expired:
-                del self._cache[k]
 
     def retrieve(self, key: str) -> Optional[Any]:
         """
