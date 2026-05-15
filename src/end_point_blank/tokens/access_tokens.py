@@ -8,6 +8,7 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 _REFRESH_BUFFER = timedelta(minutes=2)
+_MIN_TTL = timedelta(seconds=30)
 
 
 class AccessTokens:
@@ -78,10 +79,10 @@ class AccessTokens:
                 return None
 
     def exists(self, hostname: str) -> bool:
-        """Returns ``True`` if a non-expired token exists for *hostname*."""
+        """Returns ``True`` if a token with at least 30 seconds remaining exists for *hostname*."""
         key = hostname.lower()
         entry = self._tokens.get(key)
-        return bool(entry and entry["expired_at"] > datetime.now(tz=timezone.utc))
+        return bool(entry and entry["expired_at"] > datetime.now(tz=timezone.utc) + _MIN_TTL)
 
     def remove(self, hostname: str) -> None:
         """Removes the cached token for *hostname*."""
