@@ -12,7 +12,7 @@ from requests.adapters import HTTPAdapter
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 15  # seconds
+_TIMEOUT = 8  # seconds — 3 retries × 8s + 2 × 200ms ≈ 24.4s worst case, within 30s client timeouts
 _local = threading.local()
 
 
