@@ -69,5 +69,5 @@ def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.
         except requests.RequestException as exc:
             logger.error("HTTP POST to %s failed (attempt %d/3): %s", url, attempt, exc)
             if attempt < 3:
-                time.sleep(0.5)
+                time.sleep(0.2)
     return None
