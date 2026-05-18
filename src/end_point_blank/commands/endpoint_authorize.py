@@ -9,6 +9,7 @@ from ..authorization import Authorization
 from ..configuration import Configuration
 from ._http import post
 from .authentication_cache import AuthenticationCache
+from ..tokens.access_tokens import AccessTokens
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,14 @@ class EndpointAuthorize:
             "source_ip": _remote_addr(environ),
         }
 
-        response = post(config.authorize_url, Authorization.header(), body)
+        auth = Authorization.header(server_name)
+        response = post(config.authorize_url, auth, body)
+
+        if response is not None and response.status_code == 401 and auth.startswith("Bearer "):
+            AccessTokens().remove(server_name)
+            auth = Authorization.header(server_name)
+            response = post(config.authorize_url, auth, body)
+
         if response is None:
             return None
 
