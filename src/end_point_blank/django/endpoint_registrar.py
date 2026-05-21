@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dis
 import logging
 import re
 from typing import Any, Dict, Iterable, List, Optional
@@ -89,12 +90,42 @@ def _extract_http_methods(callback) -> Optional[List[str]]:
 
 
 def _extract_versions(callback) -> Dict[str, List[str]]:
-    """Find the closest ``_epb_versions`` attribute up the wrapper chain."""
+    """Find ``_epb_versions``. First look directly on the wrapper chain;
+    if nothing's declared there, scan the callback's bytecode for any
+    global functions it references and aggregate their versions. This
+    handles the common Django pattern where a URL-bound dispatcher
+    forwards to per-method inner functions decorated with ``@versioned``.
+    """
     for func in _wrapper_chain(callback):
         versions = getattr(func, "_epb_versions", None)
         if versions:
-            return versions
-    return {}
+            return dict(versions)
+
+    return _scan_referenced_versions(callback)
+
+
+def _scan_referenced_versions(callback) -> Dict[str, List[str]]:
+    aggregated: Dict[str, List[str]] = {}
+    for func in _wrapper_chain(callback):
+        code = getattr(func, "__code__", None)
+        globs = getattr(func, "__globals__", None)
+        if code is None or globs is None:
+            continue
+        for instr in dis.get_instructions(code):
+            if instr.opname not in ("LOAD_GLOBAL", "LOAD_NAME"):
+                continue
+            name = instr.argval
+            if not isinstance(name, str) or name not in globs:
+                continue
+            referenced = globs[name]
+            versions = getattr(referenced, "_epb_versions", None)
+            if not isinstance(versions, dict):
+                continue
+            for state, vs in versions.items():
+                merged = aggregated.get(state, [])
+                # de-dupe while preserving order
+                aggregated[state] = list(dict.fromkeys([*merged, *vs]))
+    return aggregated
 
 
 def _wrapper_chain(func) -> Iterable[Any]:
