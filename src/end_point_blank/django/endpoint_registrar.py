@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from ..commands.endpoint_update import EndpointUpdate
 
@@ -12,8 +12,8 @@ _DJANGO_PARAM_RE = re.compile(r"<(?:[^:>]+:)?([^>]+)>")
 
 
 def _normalize_path(path: str) -> str:
-    """Convert Django path syntax to Rails-style: <int:id> -> {id}, <slug:id> -> {id}."""
-    return _DJANGO_PARAM_RE.sub(r"{\1}", path)
+    """Convert Django path syntax to Rails-style: ``<int:id>`` -> ``:id``."""
+    return _DJANGO_PARAM_RE.sub(r":\1", path)
 
 
 def register_django_endpoints() -> None:
@@ -39,25 +39,69 @@ def register_django_endpoints() -> None:
 
 
 def _collect_endpoints(resolver, prefix: str = "") -> List[Dict[str, Any]]:
-    endpoints = []
+    endpoints: List[Dict[str, Any]] = []
+    from django.urls import URLPattern, URLResolver
+
     for pattern in resolver.url_patterns:
         try:
-            from django.urls import URLResolver, URLPattern
             if isinstance(pattern, URLResolver):
-                sub_prefix = prefix + str(pattern.pattern)
-                endpoints.extend(_collect_endpoints(pattern, sub_prefix))
+                endpoints.extend(_collect_endpoints(pattern, prefix + str(pattern.pattern)))
             elif isinstance(pattern, URLPattern):
                 path = prefix + str(pattern.pattern)
                 if not path or path.startswith("__"):
                     continue
                 callback = pattern.callback
-                versions = getattr(callback, "_epb_versions", {})
-                # Django doesn't encode HTTP methods in URLPattern; use ANY
-                endpoints.append({
-                    "path": _normalize_path("/" + path.lstrip("/")),
-                    "action": "ANY",
-                    "versions": versions,
-                })
+                versions = _extract_versions(callback)
+                normalized = _normalize_path("/" + path.lstrip("/"))
+                # Emit one endpoint per allowed HTTP method so the runtime
+                # authorize call (which knows the actual method) can find a
+                # matching row. Default to GET when methods aren't declared.
+                methods = _extract_http_methods(callback) or ["GET"]
+                for method in methods:
+                    endpoints.append({
+                        "path": normalized,
+                        "http_method": method.upper(),
+                        "endpoint_versions": versions,
+                    })
         except Exception:
             continue
     return endpoints
+
+
+def _extract_http_methods(callback) -> Optional[List[str]]:
+    """Walk the wrapper chain looking for the ``request_method_list`` closure
+    cell that ``@require_http_methods`` captures. Returns ``None`` if the view
+    has no method restriction declared."""
+    for func in _wrapper_chain(callback):
+        closure = getattr(func, "__closure__", None)
+        code = getattr(func, "__code__", None)
+        if not closure or not code:
+            continue
+        for name, cell in zip(code.co_freevars, closure):
+            if name == "request_method_list":
+                try:
+                    value = cell.cell_contents
+                except ValueError:
+                    continue
+                if isinstance(value, Iterable):
+                    return [m for m in value]
+    return None
+
+
+def _extract_versions(callback) -> Dict[str, List[str]]:
+    """Find the closest ``_epb_versions`` attribute up the wrapper chain."""
+    for func in _wrapper_chain(callback):
+        versions = getattr(func, "_epb_versions", None)
+        if versions:
+            return versions
+    return {}
+
+
+def _wrapper_chain(func) -> Iterable[Any]:
+    """Yield ``func`` and everything reachable through ``__wrapped__``."""
+    seen = set()
+    current = func
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "__wrapped__", None)
