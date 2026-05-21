@@ -41,6 +41,13 @@ class EndpointUpdate:
 
     def _write(self, data: Dict[str, Any]) -> None:
         config = Configuration()
+        logger.info(
+            "[EndPointBlank] Sending application update: "
+            "application=%s environment=%s app_version=%s",
+            data.get("application"),
+            data.get("environment"),
+            data.get("app_version"),
+        )
         response = post(config.endpoint_update_url, Authorization.header(), data)
         if response is None:
             return
