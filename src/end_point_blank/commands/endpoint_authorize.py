@@ -43,7 +43,11 @@ class EndpointAuthorize:
         config = Configuration()
         client_auth = environ.get("HTTP_AUTHORIZATION", "")
         method = environ.get("REQUEST_METHOD", "")
-        server_name = environ.get("HTTP_HOST") or environ.get("SERVER_NAME", "")
+        # HTTP_HOST includes the port for non-default ports (e.g.
+        # "localhost:3002"). Intake's app-env lookup matches on hostname only,
+        # so strip the port to match the Ruby gem's `request.host` behavior.
+        host_header = environ.get("HTTP_HOST") or environ.get("SERVER_NAME", "")
+        server_name = host_header.split(":")[0]
 
         cache_key = f"epb_auth:{client_auth}:{path}:{method}:{config.app_name}"
         cache = AuthenticationCache()
