@@ -80,6 +80,4 @@ def _writer():
 def _truncate(body: Optional[str]) -> Optional[str]:
     if body is None:
         return None
-    if len(body) > 1030:
-        return body
     return body[:1024] + "..." if len(body) > 1024 else body
