@@ -53,6 +53,10 @@ def _collect_endpoints(resolver, prefix: str = "") -> List[Dict[str, Any]]:
                     continue
                 callback = pattern.callback
                 versions = _extract_versions(callback)
+                # Skip routes with no declared version metadata. An empty
+                # array under a declared state still counts as "declared".
+                if not versions:
+                    continue
                 normalized = _normalize_path("/" + path.lstrip("/"))
                 # Emit one endpoint per allowed HTTP method so the runtime
                 # authorize call (which knows the actual method) can find a
