@@ -3,12 +3,14 @@ from __future__ import annotations
 import logging
 import traceback
 from datetime import datetime, timezone
-from typing import Optional
 
 from ..configuration import Configuration, LogMode
 from ..request_store import RequestStore
 from .direct_writer import DirectWriter
 from .delayed_writer import DelayedWriter
+
+# uuid is taken from RequestStore.get_uuid() — same source as RequestWriter and
+# ResponseWriter — so all three rows correlate on the same request.
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +37,7 @@ class ExceptionWriter:
         """Send *exc* details to the EndPointBlank API (fire-and-forget)."""
         try:
             config = Configuration()
-            environ = RequestStore.get()
-            uuid = _extract_uuid(environ)
+            uuid = RequestStore.get_uuid()
             payload = {
                 "app_name": config.app_name,
                 "message": str(exc),
@@ -61,7 +62,3 @@ def _writer():
     )
 
 
-def _extract_uuid(environ: Optional[dict]) -> Optional[str]:
-    if environ is None:
-        return None
-    return environ.get("HTTP_X_REQUEST_ID")
