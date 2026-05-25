@@ -68,6 +68,17 @@ class ReportInteractionMiddleware:
             ResponseWriter.write(status=status, headers=headers, body=body)
             RequestStore.clear()
 
+    def process_exception(self, request, exception):
+        # Django intercepts view exceptions and runs process_exception hooks
+        # before the exception can propagate to our __call__ rescue. Fire
+        # ExceptionWriter here so the application_errors event lands even
+        # when an outer middleware (e.g. a JSON error renderer) converts
+        # the exception into a normal response.
+        if isinstance(exception, UnauthorizedError):
+            return None
+        ExceptionWriter.write(exception)
+        return None
+
 
 def _response_body(response) -> str | None:
     content = getattr(response, "content", None)
