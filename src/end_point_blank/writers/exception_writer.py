@@ -41,7 +41,7 @@ class ExceptionWriter:
             payload = {
                 "app_name": config.app_name,
                 "message": str(exc),
-                "stacktrace": traceback.format_exc(),
+                "stacktrace": _format_stacktrace(exc),
                 "sent_at": datetime.now(timezone.utc).isoformat(),
                 "source_application_environment_id": (
                     RequestStore.get_source_application_environment_id()
@@ -51,6 +51,15 @@ class ExceptionWriter:
             _writer().write([payload])
         except Exception as reporting_exc:
             logger.error("ExceptionWriter failed: %s", reporting_exc)
+
+
+def _format_stacktrace(exc: BaseException) -> list[str]:
+    # All client libs ship stacktraces as an array of lines so intake can
+    # render and dedup them consistently. format_exception returns chunks
+    # that may themselves contain newlines; splitlines() flattens to one
+    # line per entry and drops the trailing empty produced by the final \n.
+    formatted = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    return "".join(formatted).splitlines()
 
 
 def _writer():
