@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import logging
 from typing import Callable
 
@@ -36,6 +37,26 @@ class ReportInteractionMiddleware:
 
     def __call__(self, request):
         RequestStore.set(request.environ)
+
+        # Django's WSGIRequest captures self._stream wrapping
+        # environ["wsgi.input"] at __init__ time. RequestWriter._read_body
+        # below drains that input to record the request payload, and then
+        # replaces the environ key — but Django's _stream still references
+        # the now-drained source. The view's subsequent request.body /
+        # json.loads(request.body) reads return b"" and any "name is
+        # required"-style POST handler trips on what looks like an empty
+        # body.
+        #
+        # Prime request.body so Django caches the bytes in self._body,
+        # then drop the cached bytes back into environ so RequestWriter
+        # has something to read non-destructively.
+        try:
+            cached_body = request.body
+        except Exception:
+            cached_body = b""
+
+        request.environ["wsgi.input"] = io.BytesIO(cached_body)
+
         RequestWriter.write()
 
         status = None
