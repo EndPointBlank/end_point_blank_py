@@ -40,11 +40,11 @@ def test_versioned_metadata_included():
 
         endpoints = mock_update.call_args[0][0]
         versioned_endpoint = next(
-            (e for e in endpoints if e["path"] == "/api/v1/users" and e["action"] == "GET"),
+            (e for e in endpoints if e["path"] == "/api/v1/users" and e["http_method"] == "GET"),
             None,
         )
         assert versioned_endpoint is not None
-        assert versioned_endpoint["versions"]["Current"] == ["v1", "v2"]
+        assert versioned_endpoint["endpoint_versions"]["Current"] == ["v1", "v2"]
 
 
 def test_skips_static_endpoint():

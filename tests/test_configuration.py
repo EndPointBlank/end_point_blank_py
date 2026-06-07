@@ -16,7 +16,9 @@ def test_singleton_returns_same_instance():
 
 
 def test_default_base_url():
-    assert Configuration().base_url == "https://endpointblank.com/api"
+    config = Configuration()
+    assert config.base_url == "https://in.endpointblank.com"
+    assert config.log_base_url == "https://log.endpointblank.com"
 
 
 def test_default_worker_count():
@@ -33,13 +35,18 @@ def test_default_cache_ttl():
 
 def test_url_properties():
     config = Configuration()
-    config.base_url = "https://example.com/api"
-    assert config.log_url == "https://example.com/api/api/logs"
-    assert config.access_token_url == "https://example.com/api/api/access_token"
-    assert config.authorize_url == "https://example.com/api/api/authorize"
-    assert config.endpoint_update_url == "https://example.com/api/api/application_updates"
-    assert config.application_errors_url == "https://example.com/api/api/application_errors"
-    assert config.endpoint_error_url == "https://example.com/api/api/endpoint_errors"
+    config.base_url = "https://control.example.com"
+    config.log_base_url = "https://log.example.com"
+    # log_base_url-derived URLs
+    assert config.log_url == "https://log.example.com/api/application_logs"
+    assert config.application_errors_url == "https://log.example.com/api/application_errors"
+    assert config.requests_url == "https://log.example.com/api/application_requests"
+    assert config.responses_url == "https://log.example.com/api/application_responses"
+    # base_url-derived URLs
+    assert config.access_token_url == "https://control.example.com/api/access_token"
+    assert config.authorize_url == "https://control.example.com/api/authorize"
+    assert config.endpoint_update_url == "https://control.example.com/api/application_updates"
+    assert config.endpoint_error_url == "https://control.example.com/api/endpoint_errors"
 
 
 def test_configure_sets_values():

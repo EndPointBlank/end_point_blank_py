@@ -50,7 +50,7 @@ def test_re_raises_exceptions():
 
     middleware = ReportInteractionMiddleware(app)
 
-    with patch.object(middleware, "_report_error"):
+    with patch("end_point_blank.middleware.report_interaction.ExceptionWriter.write"):
         with pytest.raises(ValueError, match="Something broke"):
             list(middleware(make_environ(), lambda s, h: None))
 
@@ -61,11 +61,11 @@ def test_does_not_log_unauthorized_error():
 
     middleware = ReportInteractionMiddleware(app)
 
-    with patch.object(middleware, "_report_error") as mock_report:
+    with patch("end_point_blank.middleware.report_interaction.ExceptionWriter.write") as mock_write:
         with pytest.raises(UnauthorizedError):
             list(middleware(make_environ(), lambda s, h: None))
 
-        mock_report.assert_not_called()
+        mock_write.assert_not_called()
 
 
 def test_clears_store_even_after_exception():
@@ -74,7 +74,7 @@ def test_clears_store_even_after_exception():
 
     middleware = ReportInteractionMiddleware(app)
 
-    with patch.object(middleware, "_report_error"):
+    with patch("end_point_blank.middleware.report_interaction.ExceptionWriter.write"):
         with pytest.raises(RuntimeError):
             list(middleware(make_environ(), lambda s, h: None))
 

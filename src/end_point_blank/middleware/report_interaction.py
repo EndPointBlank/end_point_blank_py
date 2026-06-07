@@ -70,7 +70,9 @@ class ReportInteractionMiddleware:
             except (ValueError, IndexError):
                 status_holder[0] = None
             headers_holder[0] = dict(response_headers)
-            return start_response(status, response_headers, exc_info)
+            if exc_info is not None:
+                return start_response(status, response_headers, exc_info)
+            return start_response(status, response_headers)
 
         try:
             logger.debug("[middleware] calling RequestWriter.write (%.3fs)", time.monotonic() - t0)
