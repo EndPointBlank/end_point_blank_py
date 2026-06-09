@@ -252,12 +252,24 @@ def apply(payload, record_type, rules, hook):
     any compile/parse failure or type mismatch degrades to a no-op. If
     ``hook`` is callable it runs last and its return value is returned.
     """
+def apply(payload, record_type, rules, hook):
+    """Apply masking rules to a wire payload for the given record type.
+
+    Each rule is a plain dict with keys ``target``/``path``/``regex``/
+    ``replacement_value`` and an optional ``enabled`` flag. Never raises;
+    any compile/parse failure or type mismatch degrades to a no-op. If
+    ``hook`` is callable it runs last and its return value is returned.
+    """
     masked = payload
     for rule in rules or []:
+        if not isinstance(rule, dict):
+            continue
         if not rule.get("enabled", True):
             continue
         masked = _apply_rule(masked, record_type, rule)
     if callable(hook):
+        return hook(masked, record_type)
+    return masked
         return hook(masked, record_type)
     return masked
 
