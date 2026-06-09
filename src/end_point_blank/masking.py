@@ -165,3 +165,75 @@ def _descend(value, key, rest, fn):
     if isinstance(value, list):
         return [_descend(v, key, rest, fn) for v in value]
     return value
+
+
+# ---------------------------------------------------------------------------
+# Replacement backreferences (shared contract). Implemented explicitly (NOT via
+# Python's native re replacement syntax): an out-of-range or non-participating
+# group expands to "".
+#
+#   groups[0] = whole match, groups[n] = nth capture (missing → "").
+#   $$           → literal "$"
+#   $<digits>    → groups[N] or "" (the FULL consecutive digit run is one N)
+#   $ + other    → literal "$" (also a trailing "$")
+# ---------------------------------------------------------------------------
+
+
+def expand(template, groups):
+    out = []
+    i = 0
+    length = len(template)
+    while i < length:
+        ch = template[i]
+        if ch != "$":
+            out.append(ch)
+            i += 1
+            continue
+        nxt = template[i + 1] if i + 1 < length else ""
+        if nxt == "$":
+            out.append("$")
+            i += 2
+            continue
+        if nxt.isdigit():
+            j = i + 1
+            while j < length and template[j].isdigit():
+                j += 1
+            n = int(template[i + 1:j])
+            g = groups[n] if n < len(groups) else None
+            out.append("" if g is None else g)
+            i = j
+            continue
+        # Lone "$" (followed by a non-digit/non-$, or end of string): literal.
+        out.append("$")
+        i += 1
+    return "".join(out)
+
+
+def regex_replace_all(pattern, string, template):
+    """Global regex replacement using the explicit expander. Walks every
+    non-overlapping match, expands the template per match, and copies gaps
+    verbatim. Guards zero-width matches against an infinite loop.
+    """
+    out = []
+    last = 0
+    pos = 0
+    length = len(string)
+    while pos <= length:
+        m = pattern.search(string, pos)
+        if m is None:
+            break
+        start, end = m.start(), m.end()
+        out.append(string[last:start])
+        groups = [m.group(0)] + [g if g is not None else "" for g in m.groups()]
+        out.append(expand(template, groups))
+        last = end
+        if end == start:
+            # Zero-width match: copy one char and advance so we don't loop forever.
+            if start < length:
+                out.append(string[start])
+            last = start + 1
+            pos = start + 1
+        else:
+            pos = end
+    out.append(string[last:])
+    return "".join(out)
