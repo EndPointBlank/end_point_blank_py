@@ -74,3 +74,13 @@ def test_configure_ignores_none_values():
 def test_configure_log_mode():
     epb.configure(log_mode=LogMode.DELAYED)
     assert Configuration().log_mode == LogMode.DELAYED
+
+
+def test_masking_config_defaults_and_set():
+    from end_point_blank.configuration import Configuration
+    c = Configuration()
+    c._init_defaults()
+    assert c.masking_rules == []
+    assert c.mask_hook is None
+    c.masking_rules = [{"target": "request_body", "path": "$.a", "replacement_value": "..."}]
+    assert c.masking_rules[0]["target"] == "request_body"
