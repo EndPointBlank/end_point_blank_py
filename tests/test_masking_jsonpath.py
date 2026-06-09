@@ -21,6 +21,10 @@ def test_wildcard_object():
 def test_wildcard_array():
     assert transform({"l": [1, 2]}, parse_path("$.l[*]"), repl) == {"l": ["X", "X"]}
 
+def test_wildcard_array_of_objects_then_child():
+    out = transform({"list": [{"k": "p"}, {"k": "q"}]}, parse_path("$.list[*].k"), repl)
+    assert out == {"list": [{"k": "X"}, {"k": "X"}]}
+
 def test_recursive_descent():
     out = transform({"a": {"password": 1}, "b": {"password": 2}}, parse_path("$..password"), repl)
     assert out == {"a": {"password": "X"}, "b": {"password": "X"}}

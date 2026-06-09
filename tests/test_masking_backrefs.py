@@ -28,3 +28,6 @@ def test_lone_dollar_literal():
 def test_multi_digit_group():
     # group 12 doesn't exist here -> empty
     assert rr(r"(\d)", "7", "$12") == ""
+
+def test_zero_width_match_is_safe():
+    assert rr(r"x*", "abc", "-") == "-a-b-c-"
