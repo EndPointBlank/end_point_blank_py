@@ -1,5 +1,5 @@
 import json
-from end_point_blank.masking import apply, FIELD_MAP
+from end_point_blank.masking import apply
 
 def rule(**kw):
     return {"target": kw["target"], "path": kw.get("path"), "regex": kw.get("regex"),
