@@ -46,6 +46,8 @@ def configure(
     application_version: str = None,
     token_ttl: int = None,
     cache_ttl: int = None,
+    masking_rules=None,
+    mask_hook=None,
 ) -> None:
     """
     Configure the EndPointBlank library.
@@ -63,6 +65,8 @@ def configure(
     :param application_version: Override application version sent in endpoint updates.
     :param token_ttl: Optional access token TTL in seconds sent to the token endpoint.
     :param cache_ttl: Credential cache TTL in seconds (default: 300).
+    :param masking_rules: List of masking rule dicts (``target``/``path``/``regex``/``replacement_value``).
+    :param mask_hook: Optional callable ``(payload, record_type) -> payload`` run after rule-based masking.
     """
     config = Configuration()
     if client_id is not None:
@@ -87,6 +91,10 @@ def configure(
         config.token_ttl = token_ttl
     if cache_ttl is not None:
         config.cache_ttl = cache_ttl
+    if masking_rules is not None:
+        config.masking_rules = masking_rules
+    if mask_hook is not None:
+        config.mask_hook = mask_hook
 
 
 __all__ = [

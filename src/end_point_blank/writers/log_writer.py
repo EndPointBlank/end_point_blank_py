@@ -64,6 +64,11 @@ class LogWriter:
                     RequestStore.get_source_application_environment_id()
                 ),
             }
+            # The log record type has nothing maskable (FIELD_MAP[log] is empty);
+            # the log writer only stamps the endpoint fields, parity with js.
+            env = environ or {}
+            payload["stamped_path"] = env.get("PATH_INFO")
+            payload["stamped_http_method"] = env.get("REQUEST_METHOD")
             _writer().write([payload])
         except Exception as exc:
             logger.error("LogWriter failed: %s", exc)

@@ -46,6 +46,8 @@ class Configuration:
         self.application_version: Optional[str] = None
         self.token_ttl: Optional[int] = None  # seconds
         self.cache_ttl: int = 300  # seconds
+        self.masking_rules: list[dict] = []
+        self.mask_hook: Optional[Callable[[dict, str], dict]] = None
 
     # URL builders
     @property

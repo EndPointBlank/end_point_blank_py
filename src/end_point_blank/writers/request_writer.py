@@ -58,6 +58,8 @@ class RequestWriter:
                 "request": _read_body(environ),
                 "sent_at": datetime.now(timezone.utc).isoformat(),
             }
+            from ..masking import apply as _mask
+            payload = _mask(payload, "request", config.masking_rules, config.mask_hook)
             _writer().write([payload])
         except Exception as exc:
             logger.error("RequestWriter failed: %s", exc)

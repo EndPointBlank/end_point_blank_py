@@ -48,6 +48,11 @@ class ExceptionWriter:
                 ),
                 "uuid": uuid,
             }
+            environ = RequestStore.get() or {}
+            payload["stamped_path"] = environ.get("PATH_INFO")
+            payload["stamped_http_method"] = environ.get("REQUEST_METHOD")
+            from ..masking import apply as _mask
+            payload = _mask(payload, "error", config.masking_rules, config.mask_hook)
             _writer().write([payload])
         except Exception as reporting_exc:
             logger.error("ExceptionWriter failed: %s", reporting_exc)
