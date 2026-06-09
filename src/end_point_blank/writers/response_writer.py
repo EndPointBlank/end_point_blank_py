@@ -63,6 +63,8 @@ class ResponseWriter:
                     RequestStore.get_source_application_environment_id()
                 ),
             }
+            from ..masking import apply as _mask
+            payload = _mask(payload, "response", config.masking_rules, config.mask_hook)
             _writer().write([payload])
         except Exception as exc:
             logger.error("ResponseWriter failed: %s", exc)
