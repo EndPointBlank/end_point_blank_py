@@ -237,3 +237,111 @@ def regex_replace_all(pattern, string, template):
             pos = end
     out.append(string[last:])
     return "".join(out)
+
+
+# ---------------------------------------------------------------------------
+# Engine
+# ---------------------------------------------------------------------------
+
+
+def apply(payload, record_type, rules, hook):
+    """Apply masking rules to a wire payload for the given record type.
+
+    Each rule is a plain dict with keys ``target``/``path``/``regex``/
+    ``replacement_value`` and an optional ``enabled`` flag. Never raises;
+    any compile/parse failure or type mismatch degrades to a no-op. If
+    ``hook`` is callable it runs last and its return value is returned.
+    """
+    masked = payload
+    for rule in rules or []:
+        if not rule.get("enabled", True):
+            continue
+        masked = _apply_rule(masked, record_type, rule)
+    if callable(hook):
+        return hook(masked, record_type)
+    return masked
+
+
+def _apply_rule(payload, record_type, rule):
+    field_map = FIELD_MAP.get(record_type, {})
+    key = field_map.get(rule.get("target"))
+    if not key or key not in payload or payload[key] is None:
+        return payload
+    masked = _mask_field(payload[key], rule)
+    if masked is payload[key]:
+        return payload
+    out = dict(payload)
+    out[key] = masked
+    return out
+
+
+def _compiled(rule):
+    """Returns a precomputed (tokens, regexp, repl) context for the rule."""
+    rv = rule.get("replacement_value")
+    repl = "..." if rv is None or rv == "" else rv
+
+    path = rule.get("path")
+    has_path = path is not None and path != ""
+    tokens = parse_path(path) if has_path else None
+    path_invalid = has_path and tokens is None
+
+    regexp = None
+    regex = rule.get("regex")
+    if not path_invalid and regex is not None and regex != "":
+        try:
+            regexp = re.compile(regex)
+        except re.error:
+            regexp = None
+
+    return tokens, regexp, repl
+
+
+def _mask_field(value, rule):
+    tokens, regexp, repl = _compiled(rule)
+
+    if isinstance(value, str):
+        if rule.get("target") in JSON_TARGETS:
+            try:
+                decoded = json.loads(value)
+            except (ValueError, TypeError):
+                return _apply_to_raw_string(value, regexp, repl)
+            return json.dumps(_apply_to_value(decoded, tokens, regexp, repl))
+        # path / error_message: plain strings — path no-ops, only regex applies.
+        return _apply_to_raw_string(value, regexp, repl)
+
+    # request_headers: a map. Path applies to the map; regex to string leaves.
+    if _is_plain_object(value):
+        return _apply_to_value(value, tokens, regexp, repl)
+
+    return value
+
+
+def _apply_to_raw_string(value, regexp, repl):
+    if regexp is not None:
+        return regex_replace_all(regexp, value, repl)
+    return value
+
+
+def _apply_to_value(value, tokens, regexp, repl):
+    # path + regex: select nodes, apply regex to leaves within each.
+    if tokens is not None and regexp is not None:
+        return transform(value, tokens, lambda old: regex_replace_leaves(old, regexp, repl))
+    # path only: replace each selected node entirely.
+    if tokens is not None:
+        return transform(value, tokens, lambda _old: repl)
+    # regex only: substitute across every string leaf.
+    if regexp is not None:
+        return regex_replace_leaves(value, regexp, repl)
+    # no usable path or regex: no-op.
+    return value
+
+
+def regex_replace_leaves(node, regexp, repl):
+    """Recurse over containers; substitute on every string leaf."""
+    if isinstance(node, str):
+        return regex_replace_all(regexp, node, repl)
+    if isinstance(node, list):
+        return [regex_replace_leaves(v, regexp, repl) for v in node]
+    if _is_plain_object(node):
+        return {k: regex_replace_leaves(v, regexp, repl) for k, v in node.items()}
+    return node
