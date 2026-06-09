@@ -290,19 +290,19 @@ def _apply_rule(payload, record_type, rule):
 def _compiled(rule):
     """Returns a precomputed (tokens, regexp, repl) context for the rule."""
     rv = rule.get("replacement_value")
-    repl = "..." if rv is None or rv == "" else rv
+    repl = rv if isinstance(rv, str) and rv != "" else "..."
 
     path = rule.get("path")
-    has_path = path is not None and path != ""
+    has_path = isinstance(path, str) and path != ""
     tokens = parse_path(path) if has_path else None
     path_invalid = has_path and tokens is None
 
     regexp = None
     regex = rule.get("regex")
-    if not path_invalid and regex is not None and regex != "":
+    if not path_invalid and isinstance(regex, str) and regex != "":
         try:
             regexp = re.compile(regex)
-        except re.error:
+        except (re.error, TypeError):
             regexp = None
 
     return tokens, regexp, repl
