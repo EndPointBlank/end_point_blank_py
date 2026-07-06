@@ -12,7 +12,9 @@ from requests.adapters import HTTPAdapter
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 8  # seconds — 3 retries × 8s + 2 × 200ms ≈ 24.4s worst case, within 30s client timeouts
+_CONNECT_TIMEOUT = 3  # seconds — TCP/TLS handshake budget per attempt
+_READ_TIMEOUT = 5  # seconds — time to first response byte per attempt
+# 3 retries × (3+5)s + 2 × 200ms ≈ 24.4s worst case, within 30s client timeouts
 _local = threading.local()
 
 
@@ -64,7 +66,7 @@ def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.
                 url,
                 json=body,
                 headers={"Authorization": auth_header, "Content-Type": "application/json"},
-                timeout=_TIMEOUT,
+                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
             )
         except requests.RequestException as exc:
             logger.error("HTTP POST to %s failed (attempt %d/3): %s", url, attempt, exc)
