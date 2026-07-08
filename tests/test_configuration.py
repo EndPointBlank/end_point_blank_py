@@ -84,3 +84,51 @@ def test_masking_config_defaults_and_set():
     assert c.mask_hook is None
     c.masking_rules = [{"target": "request_body", "path": "$.a", "replacement_value": "..."}]
     assert c.masking_rules[0]["target"] == "request_body"
+
+
+# ENDPOINTBLANK_* environment variable fallback configuration.
+#
+# Precedence for every mapped setting: explicit value set via the configure
+# API > os.environ["ENDPOINTBLANK_*"] > built-in default.
+ENV_VAR_SETTINGS = {
+    "client_id": ("ENDPOINTBLANK_CLIENT_ID", None),
+    "client_secret": ("ENDPOINTBLANK_CLIENT_SECRET", None),
+    "base_url": ("ENDPOINTBLANK_BASE_URL", "https://in.endpointblank.com"),
+    "log_base_url": ("ENDPOINTBLANK_LOG_BASE_URL", "https://log.endpointblank.com"),
+    "app_name": ("ENDPOINTBLANK_APP_NAME", None),
+    "environment": ("ENDPOINTBLANK_ENV", None),
+}
+
+
+@pytest.mark.parametrize("attr,env_pair", ENV_VAR_SETTINGS.items(), ids=ENV_VAR_SETTINGS.keys())
+def test_env_var_used_when_no_explicit_value(monkeypatch, attr, env_pair):
+    env_var, _default = env_pair
+    monkeypatch.setenv(env_var, "from-env")
+    config = Configuration()
+    assert getattr(config, attr) == "from-env"
+
+
+@pytest.mark.parametrize("attr,env_pair", ENV_VAR_SETTINGS.items(), ids=ENV_VAR_SETTINGS.keys())
+def test_explicit_value_beats_env_var(monkeypatch, attr, env_pair):
+    env_var, _default = env_pair
+    monkeypatch.setenv(env_var, "from-env")
+    config = Configuration()
+    setattr(config, attr, "from-explicit")
+    assert getattr(config, attr) == "from-explicit"
+
+
+@pytest.mark.parametrize("attr,env_pair", ENV_VAR_SETTINGS.items(), ids=ENV_VAR_SETTINGS.keys())
+def test_env_var_beats_default(monkeypatch, attr, env_pair):
+    env_var, default = env_pair
+    monkeypatch.setenv(env_var, "from-env")
+    config = Configuration()
+    assert getattr(config, attr) == "from-env"
+    assert getattr(config, attr) != default
+
+
+@pytest.mark.parametrize("attr,env_pair", ENV_VAR_SETTINGS.items(), ids=ENV_VAR_SETTINGS.keys())
+def test_default_used_when_no_explicit_value_and_no_env_var(monkeypatch, attr, env_pair):
+    env_var, default = env_pair
+    monkeypatch.delenv(env_var, raising=False)
+    config = Configuration()
+    assert getattr(config, attr) == default
