@@ -10,7 +10,7 @@ from ._http import post
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.1.0"
+VERSION = "0.2.1"
 
 
 class EndpointUpdate:
