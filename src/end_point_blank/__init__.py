@@ -30,7 +30,7 @@ Quick start::
 from .configuration import Configuration, LogMode
 from .unauthorized_error import UnauthorizedError
 
-VERSION = "0.1.0"
+VERSION = "0.2.1"
 
 
 def configure(
