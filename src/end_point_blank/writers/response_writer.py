@@ -58,6 +58,7 @@ class ResponseWriter:
                 "body": _truncate(body),
                 "sent_at": datetime.now(timezone.utc).isoformat(),
                 "route": route,
+                "method": environ.get("REQUEST_METHOD") if environ else None,
                 "data": data or {},
                 "source_application_environment_id": (
                     RequestStore.get_source_application_environment_id()
