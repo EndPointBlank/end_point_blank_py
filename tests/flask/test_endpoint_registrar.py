@@ -10,7 +10,7 @@ def make_app():
     app = Flask(__name__)
 
     @app.route("/api/v1/users", methods=["GET"])
-    @versioned(["v1", "v2"], state="Current")
+    @versioned(["v1", "v2"])
     def list_users():
         return []
 
@@ -44,7 +44,7 @@ def test_versioned_metadata_included():
             None,
         )
         assert versioned_endpoint is not None
-        assert versioned_endpoint["endpoint_versions"]["Current"] == ["v1", "v2"]
+        assert versioned_endpoint["endpoint_versions"] == ["v1", "v2"]
 
 
 def test_skips_static_endpoint():
