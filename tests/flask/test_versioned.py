@@ -2,30 +2,33 @@ from end_point_blank.flask.versioned import versioned
 
 
 def test_versioned_attaches_metadata():
-    @versioned(["v1", "v2"], state="Current")
+    @versioned(["v1", "v2"])
     def my_view():
         return "ok"
 
     assert hasattr(my_view, "_epb_versions")
-    assert my_view._epb_versions["Current"] == ["v1", "v2"]
+    assert my_view._epb_versions == ["v1", "v2"]
 
 
-def test_versioned_default_state():
-    @versioned(["v1"])
+def test_versioned_with_no_versions_is_still_a_declaration():
+    # Distinct from never decorating: the endpoint is reported with no version
+    # attached, which the portal records as "deployed at no specific version".
+    @versioned([])
     def my_view():
         return "ok"
 
-    assert "__default__" in my_view._epb_versions
+    assert my_view._epb_versions == []
 
 
-def test_versioned_multiple_decorators():
-    @versioned(["v1"], state="Deprecated")
-    @versioned(["v2", "v3"], state="Current")
+def test_versioned_multiple_decorators_merge_and_dedupe():
+    @versioned(["v1", "v2"])
+    @versioned(["v2", "v3"])
     def my_view():
         return "ok"
 
-    assert my_view._epb_versions["Current"] == ["v2", "v3"]
-    assert my_view._epb_versions["Deprecated"] == ["v1"]
+    # Order follows declaration, innermost first, so the manifest stays stable
+    # between deploys rather than churning.
+    assert my_view._epb_versions == ["v2", "v3", "v1"]
 
 
 def test_versioned_preserves_function_name():

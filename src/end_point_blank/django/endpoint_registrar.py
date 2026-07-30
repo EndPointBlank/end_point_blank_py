@@ -93,7 +93,7 @@ def _extract_http_methods(callback) -> Optional[List[str]]:
     return None
 
 
-def _extract_versions(callback) -> Dict[str, List[str]]:
+def _extract_versions(callback) -> List[str]:
     """Find ``_epb_versions``. First look directly on the wrapper chain;
     if nothing's declared there, scan the callback's bytecode for any
     global functions it references and aggregate their versions. This
@@ -103,13 +103,13 @@ def _extract_versions(callback) -> Dict[str, List[str]]:
     for func in _wrapper_chain(callback):
         versions = getattr(func, "_epb_versions", None)
         if versions:
-            return dict(versions)
+            return list(versions)
 
     return _scan_referenced_versions(callback)
 
 
-def _scan_referenced_versions(callback) -> Dict[str, List[str]]:
-    aggregated: Dict[str, List[str]] = {}
+def _scan_referenced_versions(callback) -> List[str]:
+    aggregated: List[str] = []
     for func in _wrapper_chain(callback):
         code = getattr(func, "__code__", None)
         globs = getattr(func, "__globals__", None)
@@ -123,12 +123,10 @@ def _scan_referenced_versions(callback) -> Dict[str, List[str]]:
                 continue
             referenced = globs[name]
             versions = getattr(referenced, "_epb_versions", None)
-            if not isinstance(versions, dict):
+            if not isinstance(versions, list):
                 continue
-            for state, vs in versions.items():
-                merged = aggregated.get(state, [])
-                # de-dupe while preserving order
-                aggregated[state] = list(dict.fromkeys([*merged, *vs]))
+            # de-dupe while preserving order
+            aggregated = list(dict.fromkeys([*aggregated, *versions]))
     return aggregated
 
 

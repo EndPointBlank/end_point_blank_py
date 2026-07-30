@@ -40,7 +40,7 @@ def _collect_endpoints(flask_app) -> List[Dict[str, Any]]:
             continue
 
         view_func = flask_app.view_functions.get(rule.endpoint)
-        versions = getattr(view_func, "_epb_versions", {})
+        versions = getattr(view_func, "_epb_versions", [])
 
         for method in rule.methods or []:
             if method in ("HEAD", "OPTIONS"):
