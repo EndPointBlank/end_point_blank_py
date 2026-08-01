@@ -5,6 +5,7 @@ import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from ..request_store import RequestStore
+from .. import deprecation_headers
 from ..unauthorized_error import UnauthorizedError
 from ..writers.exception_writer import ExceptionWriter
 from ..writers.request_writer import RequestWriter
@@ -69,6 +70,14 @@ class ReportInteractionMiddleware:
                 status_holder[0] = int(status.split(" ", 1)[0])
             except (ValueError, IndexError):
                 status_holder[0] = None
+            # RFC 9745 / RFC 8594. start_response is the only point at which
+            # the response headers exist and have not yet been sent — the
+            # `finally` below runs after the app has produced them, too late to
+            # add any.
+            response_headers = deprecation_headers.apply(
+                response_headers, RequestStore.get_deprecation()
+            )
+
             headers_holder[0] = dict(response_headers)
             if exc_info is not None:
                 return start_response(status, response_headers, exc_info)

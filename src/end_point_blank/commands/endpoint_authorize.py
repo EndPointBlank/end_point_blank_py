@@ -9,6 +9,12 @@ from ..authorization import Authorization
 from ..configuration import Configuration
 from ._http import post
 from .authentication_cache import AuthenticationCache
+from ..request_store import RequestStore
+
+# The cache declines to store falsy values, so "authorized, not deprecated"
+# needs a truthy marker of its own — otherwise every such request would miss the
+# cache and re-authorize.
+_NO_DEPRECATION = object()
 from ..tokens.access_tokens import AccessTokens
 
 logger = logging.getLogger(__name__)
@@ -53,6 +59,13 @@ class EndpointAuthorize:
         cache = AuthenticationCache()
         if cache.exists(cache_key):
             logger.debug("Authorization cache hit for %s %s", method, path)
+            # The cached value is the deprecation block (or the "none" marker),
+            # not a truthy flag. Authorization is cached per client+route, so
+            # caching a flag would limit the Deprecation and Sunset headers to
+            # cache misses — roughly one request in N, which reads as a flaky
+            # feature rather than a missing one.
+            cached = cache.retrieve(cache_key)
+            RequestStore.set_deprecation(None if cached is _NO_DEPRECATION else cached)
             return _CachedResponse(201)
 
         body: Dict[str, Any] = {
@@ -78,10 +91,25 @@ class EndpointAuthorize:
 
         logger.info("Authorization response: %s - %s", response.status_code, response.text)
         if response.status_code == 201:
-            cache.store(cache_key, True)
+            deprecation = _deprecation_from(response)
+            RequestStore.set_deprecation(deprecation)
+            cache.store(cache_key, deprecation if deprecation else _NO_DEPRECATION)
         elif response.status_code > 299:
             logger.error("Authorization failed: %s - %s", response.status_code, response.text)
         return response
+
+
+def _deprecation_from(response) -> Optional[dict]:
+    """The authorize response carries a ``deprecation`` block only when the
+    version being called is deprecated. Absent, malformed, or unparseable all
+    mean the same thing here: nothing to say."""
+    try:
+        payload = response.json()
+    except Exception:
+        return None
+
+    block = payload.get("deprecation") if isinstance(payload, dict) else None
+    return block if isinstance(block, dict) else None
 
 
 def _remote_addr(environ: Dict[str, Any]) -> Optional[str]:
