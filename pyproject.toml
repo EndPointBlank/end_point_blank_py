@@ -24,6 +24,8 @@ dev = [
     "pytest-mock>=3.11",
     "responses>=0.23",
     "flask>=2.3",
+    "django>=4.2",
+    "pytest-cov>=4.1",
 ]
 
 [tool.setuptools.packages.find]
@@ -31,3 +33,19 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["end_point_blank"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# Lines that cannot be reached by a test are excluded explicitly rather than
+# left to drag the number down — an unexplained gap is indistinguishable from
+# an untested one.
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]

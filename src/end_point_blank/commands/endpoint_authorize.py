@@ -10,14 +10,14 @@ from ..configuration import Configuration
 from ._http import post
 from .authentication_cache import AuthenticationCache
 from ..request_store import RequestStore
+from ..tokens.access_tokens import AccessTokens
+
+logger = logging.getLogger(__name__)
 
 # The cache declines to store falsy values, so "authorized, not deprecated"
 # needs a truthy marker of its own — otherwise every such request would miss the
 # cache and re-authorize.
 _NO_DEPRECATION = object()
-from ..tokens.access_tokens import AccessTokens
-
-logger = logging.getLogger(__name__)
 
 
 class _CachedResponse:

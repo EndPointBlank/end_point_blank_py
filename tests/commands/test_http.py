@@ -69,3 +69,12 @@ def test_post_returns_none_on_generic_timeout_without_raising():
             result = _http.post("https://intake.example/authorize", "Bearer abc", {"a": 1})
 
     assert result is None
+
+
+def test_ssl_context_is_built_once_and_reused():
+    """Building an SSL context is expensive; a fresh one per connection would
+    undo the point of the per-thread session."""
+    first = _http._SSLAdapter._ssl_context()
+    second = _http._SSLAdapter._ssl_context()
+
+    assert first is second
