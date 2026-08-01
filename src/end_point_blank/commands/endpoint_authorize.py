@@ -55,7 +55,11 @@ class EndpointAuthorize:
         host_header = environ.get("HTTP_HOST") or environ.get("SERVER_NAME", "")
         server_name = host_header.split(":")[0]
 
-        cache_key = f"epb_auth:{client_auth}:{path}:{method}:{config.app_name}"
+        # The version is part of the key because authorization is decided per
+        # endpoint version, and so is the deprecation carried back with it.
+        # Without it, two callers on different versions of the same route share
+        # one entry.
+        cache_key = f"epb_auth:{client_auth}:{path}:{method}:{config.app_name}:{version}"
         cache = AuthenticationCache()
         if cache.exists(cache_key):
             logger.debug("Authorization cache hit for %s %s", method, path)
