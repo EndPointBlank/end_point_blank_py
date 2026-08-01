@@ -67,3 +67,17 @@ def test_custom_version_finder_takes_precedence():
 def test_query_param_version_without_v_prefix():
     environ = make_environ(QUERY_STRING="version=v7&other=true")
     assert VersionFinder().find(environ) == "7"
+
+
+def test_query_param_without_a_version_number_falls_through():
+    # "?version=latest" is a real thing callers send. It is not a version we can
+    # report, and it must not stop the path from being checked.
+    environ = make_environ(QUERY_STRING="version=latest&other=true", PATH_INFO="/v4/students")
+
+    assert VersionFinder().find(environ) == "4"
+
+
+def test_query_string_without_a_version_param_falls_through():
+    environ = make_environ(QUERY_STRING="page=2&sort=name", PATH_INFO="/v4/students")
+
+    assert VersionFinder().find(environ) == "4"

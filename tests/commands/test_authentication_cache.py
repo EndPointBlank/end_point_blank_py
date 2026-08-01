@@ -81,3 +81,37 @@ def test_expired_entry_returns_none():
     cache.store("key1", "creds")
     time.sleep(0.01)
     assert cache.retrieve("key1") is None
+
+
+class TestEviction:
+    """The cache is process-lifetime and keyed on client credentials + route, so
+    without eviction a busy service accumulates an entry per distinct caller
+    forever. Both bounds below are what keep it from becoming a memory leak."""
+
+    def test_expired_entries_are_evicted_when_something_new_is_stored(self):
+        cache = AuthenticationCache()
+        Configuration().cache_ttl = 0
+        cache.store("stale", "creds")
+        time.sleep(0.01)
+
+        Configuration().cache_ttl = 300
+        cache.store("fresh", "creds")
+
+        assert cache.keys() == ["fresh"]
+
+    def test_the_cache_is_capped(self):
+        cache = AuthenticationCache()
+
+        for n in range(1005):
+            cache.store(f"key{n}", "creds")
+
+        assert cache.size() == 1000
+
+    def test_the_oldest_entry_is_dropped_when_the_cap_is_reached(self):
+        cache = AuthenticationCache()
+
+        for n in range(1001):
+            cache.store(f"key{n}", "creds")
+
+        assert cache.retrieve("key0") is None
+        assert cache.retrieve("key1000") == "creds"
