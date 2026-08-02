@@ -237,3 +237,62 @@ class TestProcessException:
 
         assert middleware.process_exception(post_request(), UnauthorizedError("nope")) is None
         exception_writer.write.assert_not_called()
+
+
+class TestDeprecationHeaders:
+    """The Django middleware shipped without these while the WSGI/Flask one had
+    them, so a Django provider silently served no RFC 9745 / RFC 8594 headers at
+    all — found by running a real Django app against a deprecated version."""
+
+    def _respond(self, deprecation, response=None):
+        factory = RequestFactory()
+        request = factory.get("/students")
+        base = response or HttpResponse("ok")
+
+        def get_response(_req):
+            RequestStore.set_deprecation(deprecation)
+            return base
+
+        return ReportInteractionMiddleware(get_response)(request)
+
+    def test_emits_both_headers_when_the_version_is_deprecated(self):
+        response = self._respond(
+            {"deprecated_at": "2026-08-01T23:16:48Z", "sunset_at": "2026-11-11T11:11:11Z"}
+        )
+
+        assert response["Deprecation"] == "@1785626208"
+        assert response["Sunset"] == "Wed, 11 Nov 2026 11:11:11 GMT"
+
+    def test_emits_deprecation_alone_when_no_sunset_is_set(self):
+        response = self._respond({"deprecated_at": "2026-08-01T23:16:48Z", "sunset_at": None})
+
+        assert response["Deprecation"] == "@1785626208"
+        assert not response.has_header("Sunset")
+
+    @pytest.mark.parametrize("deprecation", [None, {}])
+    def test_emits_nothing_when_the_version_is_not_deprecated(self, deprecation):
+        response = self._respond(deprecation)
+
+        assert not response.has_header("Deprecation")
+        assert not response.has_header("Sunset")
+
+    def test_does_not_overwrite_a_header_the_application_set(self):
+        # An application that sets its own Sunset has said something more
+        # specific than we know.
+        existing = HttpResponse("ok")
+        existing["Sunset"] = "Mon, 01 Jan 2029 00:00:00 GMT"
+
+        response = self._respond(
+            {"deprecated_at": "2026-08-01T23:16:48Z", "sunset_at": "2026-11-11T11:11:11Z"},
+            response=existing,
+        )
+
+        assert response["Sunset"] == "Mon, 01 Jan 2029 00:00:00 GMT"
+        assert response["Deprecation"] == "@1785626208"
+
+    def test_a_malformed_timestamp_does_not_break_the_response(self):
+        # A bad date is worth no header, not a 500 on a request that succeeded.
+        response = self._respond({"deprecated_at": "not a date"})
+
+        assert response.status_code == 200
+        assert not response.has_header("Deprecation")

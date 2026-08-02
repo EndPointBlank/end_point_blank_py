@@ -4,6 +4,7 @@ import io
 import logging
 from typing import Callable
 
+from .. import deprecation_headers
 from ..request_store import RequestStore
 from ..unauthorized_error import UnauthorizedError
 from ..writers.exception_writer import ExceptionWriter
@@ -65,6 +66,7 @@ class ReportInteractionMiddleware:
 
         try:
             response = self.get_response(request)
+            _apply_deprecation_headers(response)
             status = getattr(response, "status_code", None)
             try:
                 headers = {k: v for k, v in response.items()}
@@ -99,6 +101,27 @@ class ReportInteractionMiddleware:
             return None
         ExceptionWriter.write(exception)
         return None
+
+
+def _apply_deprecation_headers(response) -> None:
+    """Adds the RFC 9745 ``Deprecation`` and RFC 8594 ``Sunset`` headers.
+
+    Django hands back a response object rather than the ``(status, headers)``
+    pair the WSGI middleware intercepts at ``start_response``, so the headers go
+    on here instead — but the rule is the same one
+    :func:`end_point_blank.deprecation_headers.apply` follows: never overwrite a
+    header the application already set, and never raise into a response that has
+    already succeeded.
+    """
+    try:
+        deprecation = RequestStore.get_deprecation()
+        if not deprecation:
+            return
+        for name, value in deprecation_headers.build(deprecation).items():
+            if not response.has_header(name):
+                response[name] = value
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("Failed to apply deprecation headers: %s", exc)
 
 
 def _response_body(response) -> str | None:
