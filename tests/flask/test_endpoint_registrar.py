@@ -1,8 +1,12 @@
 from unittest.mock import patch
-import pytest
 
-flask = pytest.importorskip("flask")
+# Imported outright rather than via pytest.importorskip. Flask is in the `dev`
+# extra, so it is always present when the suite is meant to run — and a skip
+# would turn a missing dependency into a green build with silently zero coverage
+# of this integration. That is the shape of the bug the contract test in
+# tests/test_integration_contract.py exists to prevent.
 from flask import Flask
+
 from end_point_blank.flask import register_flask_endpoints, versioned
 
 

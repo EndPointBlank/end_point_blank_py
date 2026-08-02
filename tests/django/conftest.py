@@ -1,17 +1,5 @@
-"""Django needs settings configured before ``HttpResponse``/``RequestFactory``
-can be imported, and the SDK's Django integration is exercised against real
-Django objects rather than stand-ins."""
-
-import django
-from django.conf import settings
-
-if not settings.configured:
-    settings.configure(
-        DEBUG=False,
-        ALLOWED_HOSTS=["*"],
-        DATABASES={},
-        INSTALLED_APPS=[],
-        SECRET_KEY="test-only",
-        DEFAULT_CHARSET="utf-8",
-    )
-    django.setup()
+"""Django settings are configured in ``tests/conftest.py`` rather than here, so
+the cross-integration contract in ``tests/test_integration_contract.py`` can
+exercise the Django integration too. The SDK's Django code is tested against
+real Django objects rather than stand-ins.
+"""
