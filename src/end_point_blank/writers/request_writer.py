@@ -5,6 +5,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from ..base_url import resolve as resolve_base_url
 from ..commands.version_finder import VersionFinder
 from ..configuration import Configuration, LogMode
 from ..request_store import RequestStore
@@ -50,7 +51,6 @@ class RequestWriter:
                 "app_name": config.app_name,
                 "env": config.environment,
                 "uuid": RequestStore.get_uuid(),
-                "host": environ.get("HTTP_HOST") or environ.get("SERVER_NAME"),
                 "headers": headers,
                 "path": environ.get("PATH_INFO", ""),
                 "http_method": environ.get("REQUEST_METHOD", ""),
@@ -58,6 +58,9 @@ class RequestWriter:
                 "request": _read_body(environ),
                 "sent_at": datetime.now(timezone.utc).isoformat(),
             }
+            payload.update(
+                resolve_base_url(environ, trust_proxy_headers=config.trust_proxy_headers)
+            )
             from ..masking import apply as _mask
             payload = _mask(payload, "request", config.masking_rules, config.mask_hook)
             _writer().write([payload])

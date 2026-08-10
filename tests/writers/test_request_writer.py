@@ -105,6 +105,65 @@ class TestThePayload:
 
         assert write_and_capture()["sent_at"].endswith("+00:00")
 
+    def test_splits_the_port_off_the_host_header(self):
+        # HTTP_HOST carries the port; this client used to ship
+        # "api.example.com:8443" as the host while the other four shipped
+        # "api.example.com" for the same request.
+        RequestStore.set(environ(HTTP_HOST="API.Example.com:8443", **{"wsgi.url_scheme": "https"}))
+
+        payload = write_and_capture()
+
+        assert payload["host"] == "api.example.com"
+        assert payload["scheme"] == "https"
+        assert payload["port"] == 8443
+
+    def test_omits_the_base_url_fields_it_cannot_resolve(self):
+        env = environ()
+        env.pop("HTTP_HOST")
+        RequestStore.set(env)
+
+        payload = write_and_capture()
+
+        assert "host" not in payload
+        assert "scheme" not in payload
+        assert "port" not in payload
+
+    # The pair below is the wiring check for the flag: same proxied request,
+    # both settings. If the writer ever stops passing the configured value
+    # through, the second test reports api.example.com and fails.
+    @staticmethod
+    def _proxied_environ():
+        return environ(
+            **{
+                "wsgi.url_scheme": "http",
+                "SERVER_PORT": "8080",
+                "HTTP_HOST": "internal.svc:8080",
+                "HTTP_X_FORWARDED_PROTO": "https",
+                "HTTP_X_FORWARDED_HOST": "api.example.com",
+                "HTTP_X_FORWARDED_PORT": "443",
+            }
+        )
+
+    def test_reports_the_forwarded_values_when_proxy_headers_are_trusted(self):
+        Configuration().trust_proxy_headers = True
+        RequestStore.set(self._proxied_environ())
+
+        payload = write_and_capture()
+
+        assert payload["scheme"] == "https"
+        assert payload["host"] == "api.example.com"
+        assert "port" not in payload
+
+    def test_reports_the_connection_and_host_header_when_proxy_headers_are_not_trusted(self):
+        Configuration().trust_proxy_headers = False
+        RequestStore.set(self._proxied_environ())
+
+        payload = write_and_capture()
+
+        assert payload["scheme"] == "http"
+        assert payload["host"] == "internal.svc"
+        assert payload["port"] == 8080
+
 
 class TestTheHeaders:
     def test_converts_wsgi_keys_back_to_header_names(self):
