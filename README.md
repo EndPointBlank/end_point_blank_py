@@ -84,12 +84,43 @@ called with an explicit value for that setting.
 | `application_version` | — | `None` | Overrides the app version sent in endpoint updates. |
 | `token_ttl` | — | `None` | Optional access-token TTL (seconds) sent to the token endpoint. |
 | `cache_ttl` | — | `300` | Seconds a successful authorization result is cached (keyed on client-auth + path + method). |
+| `trust_proxy_headers` | — | `True` | Whether the per-request `scheme`/`host`/`port` report honors `X-Forwarded-Proto`/`-Host`/`-Port`. See [Reported base URL](#reported-base-url). |
 | `masking_rules` | — | `[]` | List of masking rule dicts. See [Data masking](#data-masking). |
 | `mask_hook` | — | `None` | Optional callable `(payload, record_type) -> payload` run after rule-based masking. |
 
 `Configuration` is a singleton — `Configuration()` always returns the same instance, and you can
 also read/assign its attributes directly (`Configuration().log_base_url = "..."`) instead of going
 through `configure()`.
+
+### Reported base URL
+
+Every request payload carries the base URL the *caller* used, as three separate fields —
+`scheme`, `host` and `port`. A field that cannot be resolved is omitted rather than sent as
+null. EndPointBlank uses these to fill in an application environment's base URL for you,
+instead of asking someone to type it.
+
+By default the library honors `X-Forwarded-Proto`, `X-Forwarded-Host` and `X-Forwarded-Port`,
+reading the **last** comma-separated hop, straight off the WSGI environ. (WSGI itself has no
+notion of a trusted proxy, which is why this library previously could not see through a load
+balancer at all.) It resolves them the same way the Ruby, JS, Java and Elixir clients do, so
+all five answer identically for the same request.
+
+**Turn this off if your application is reachable directly, with no proxy in front of it** —
+or if you would simply rather report nothing than report something a caller could influence:
+
+```python
+epb.configure(trust_proxy_headers=False)
+```
+
+With it off, the `X-Forwarded-*` headers are ignored entirely and `scheme`, `host` and `port`
+come from the connection and the `Host` header only.
+
+It defaults to `True` because the alternative is worse for almost everyone. Most production
+deployments sit behind an ALB, nginx, Caddy or an Ingress, and a client that ignored the
+forwarded headers there would not report *nothing* — it would confidently report an internal
+hostname on an internal port. `host` is caller-controlled either way (it has always come from
+`HTTP_HOST`), and none of these three values is ever used as an identity or authorization
+key, so the worst case is a wrong *suggestion* that an admin has to approve.
 
 ### `configure(...)` example
 
