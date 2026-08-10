@@ -131,3 +131,81 @@ def test_keeps_an_ipv6_literal_whole_and_splits_its_port_off():
         "host": "[2001:db8::1]",
         "port": 8443,
     }
+
+
+# --- Fix round 1: default-port synthesis, and malformed forwarded headers ---
+
+
+def test_omits_the_scheme_and_port_when_only_host_and_port_are_forwarded():
+    # X-Forwarded-Host and X-Forwarded-Port both validate, but no
+    # X-Forwarded-Proto was sent. Without a resolved scheme there is no
+    # default port to compare 443 against, so the port is left out entirely
+    # rather than reported unconditionally -- one origin must not get two
+    # different (scheme, host, port) groupings depending on whether a proxy
+    # happened to send one extra header.
+    resolved = resolve(
+        environ(HTTP_X_FORWARDED_HOST="api.example.com", HTTP_X_FORWARDED_PORT="443")
+    )
+
+    assert resolved == {"host": "api.example.com"}
+
+
+def test_ignores_a_malformed_forwarded_port_rather_than_erasing_the_authority_port():
+    # X-Forwarded-Port is garbage. It must not count as proxy evidence -- the
+    # connection's own scheme stays trustworthy -- and it must not swallow the
+    # fallback to the port embedded in the Host header either.
+    resolved = resolve(
+        environ(
+            **{
+                "wsgi.url_scheme": "https",
+                "SERVER_PORT": "8080",
+                "HTTP_HOST": "api.example.com:9000",
+                "HTTP_X_FORWARDED_PORT": "not-a-port",
+            }
+        )
+    )
+
+    assert resolved == {"scheme": "https", "host": "api.example.com", "port": 9000}
+
+
+def test_ignores_a_malformed_forwarded_proto_rather_than_erasing_the_scheme():
+    # X-Forwarded-Proto is garbage; X-Forwarded-Host validates. Host presence
+    # is not proxy evidence on its own -- it was already caller-controlled via
+    # the Host header regardless of trust_proxy_headers -- so the junk proto
+    # must not erase the connection's scheme either.
+    resolved = resolve(
+        environ(
+            SERVER_PORT="443",
+            HTTP_X_FORWARDED_PROTO="not a scheme",
+            HTTP_X_FORWARDED_HOST="api.example.com",
+        )
+    )
+
+    assert resolved == {"scheme": "https", "host": "api.example.com"}
+
+
+def test_drops_a_forwarded_host_longer_than_dns_allows():
+    # DNS caps a hostname at 253 bytes; nothing longer can be real. It is
+    # dropped, not truncated -- a truncated hostname is a plausible-looking
+    # wrong value, and the portal reads this field verbatim. The oversized
+    # header doesn't validate, so it falls back like an absent one; with no
+    # Host/SERVER_NAME to fall back to here, host resolves to nothing, while
+    # scheme and port still resolve normally from their own sources.
+    resolved = resolve(
+        {
+            "wsgi.url_scheme": "https",
+            "SERVER_PORT": "8443",
+            "HTTP_X_FORWARDED_HOST": "a" * 300,
+        }
+    )
+
+    assert "host" not in resolved
+    assert resolved == {"scheme": "https", "port": 8443}
+
+
+def test_keeps_a_host_at_the_dns_length_cap_and_drops_one_byte_over():
+    at_cap = "a" * 253
+    over_cap = "a" * 254
+
+    assert resolve(environ(HTTP_HOST=at_cap))["host"] == at_cap
+    assert "host" not in resolve(environ(HTTP_HOST=over_cap))
