@@ -243,3 +243,33 @@ def test_hostname_is_none_for_a_host_longer_than_dns_allows():
 
 def test_hostname_is_none_when_handed_something_that_is_not_an_environ():
     assert hostname(None) is None
+
+
+# --- An empty Host header is absent, not present-but-unusable ---
+
+
+def test_an_empty_host_header_falls_through_to_the_server_name():
+    # The cross-SDK contract, not an accident of Python's falsiness: a caller
+    # that sends "Host:" with no value has said nothing about which host it
+    # meant, so all five clients treat it as absent and fall through. Ruby and
+    # Elixir stopped here instead, because "" is truthy in both.
+    assert resolve(environ(HTTP_HOST="")) == {
+        "scheme": "https",
+        "host": "api.example.com",
+        "port": 8443,
+    }
+
+
+def test_hostname_falls_through_to_the_server_name_on_an_empty_host_header():
+    assert hostname(environ(HTTP_HOST="")) == "api.example.com"
+
+
+def test_an_empty_host_header_with_no_server_name_resolves_to_no_host_at_all():
+    # Nothing left to fall through to. hostname gives up, and resolve omits the
+    # field rather than reporting null, exactly as for a malformed host.
+    assert hostname(environ(HTTP_HOST="", SERVER_NAME=None)) is None
+
+    resolved = resolve(environ(HTTP_HOST="", SERVER_NAME=None))
+
+    assert "host" not in resolved
+    assert resolved == {"scheme": "https", "port": 8443}
