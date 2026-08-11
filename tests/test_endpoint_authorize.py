@@ -241,3 +241,39 @@ class TestFailureResponses:
         with patch.object(ea, "post", return_value=response(201)) as post:
             EndpointAuthorize.authorize(environ(), "/students", "1")
             assert post.call_count == 1
+
+
+class TestTheHostnameItReports:
+    def test_lowercases_it_and_strips_the_port(self):
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(
+                environ(HTTP_HOST="API.Example.TEST:3000"), "/students", "1"
+            )
+
+            assert post.call_args[0][2]["target_hostname"] == "api.example.test"
+
+    def test_keeps_an_ipv6_literal_whole_and_bracketed(self):
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(
+                environ(HTTP_HOST="[2001:DB8::1]:8443"), "/students", "1"
+            )
+
+            assert post.call_args[0][2]["target_hostname"] == "[2001:db8::1]"
+
+    def test_ignores_forwarded_host(self):
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(
+                environ(HTTP_HOST="internal.svc", HTTP_X_FORWARDED_HOST="api.example.test"),
+                "/students",
+                "1",
+            )
+
+            assert post.call_args[0][2]["target_hostname"] == "internal.svc"
+
+    def test_reports_no_hostname_when_the_host_is_unusable(self):
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(
+                environ(HTTP_HOST="api.example.test/../evil"), "/students", "1"
+            )
+
+            assert post.call_args[0][2]["target_hostname"] is None
