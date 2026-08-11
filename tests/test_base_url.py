@@ -7,7 +7,7 @@ sibling clients each had a different one -- which is exactly why the same
 request produced five different hosts.
 """
 
-from end_point_blank.base_url import resolve
+from end_point_blank.base_url import hostname, resolve
 
 
 def environ(**overrides):
@@ -209,3 +209,37 @@ def test_keeps_a_host_at_the_dns_length_cap_and_drops_one_byte_over():
 
     assert resolve(environ(HTTP_HOST=at_cap))["host"] == at_cap
     assert "host" not in resolve(environ(HTTP_HOST=over_cap))
+
+
+def test_hostname_lowercases_the_host_and_strips_the_port():
+    assert hostname(environ()) == "api.example.com"
+
+
+def test_hostname_keeps_an_ipv6_literal_whole_and_bracketed():
+    # '[::1]:8443'.split(':')[0] is '[' -- the bug this replaces.
+    assert hostname(environ(HTTP_HOST="[2001:DB8::1]:8443")) == "[2001:db8::1]"
+
+
+def test_hostname_ignores_forwarded_host_even_though_resolve_honors_it():
+    # target_hostname is the portal's application-environment lookup key. A
+    # value matching no registered row is a hard 422, not a cache miss.
+    proxied = environ(HTTP_HOST="internal.svc", HTTP_X_FORWARDED_HOST="api.example.com")
+
+    assert hostname(proxied) == "internal.svc"
+    assert resolve(proxied)["host"] == "api.example.com"
+
+
+def test_hostname_falls_back_to_server_name_without_a_host_header():
+    assert hostname(environ(HTTP_HOST=None)) == "api.example.com"
+
+
+def test_hostname_is_none_for_a_host_that_is_not_shaped_like_a_hostname():
+    assert hostname(environ(HTTP_HOST="api.example.com/../evil")) is None
+
+
+def test_hostname_is_none_for_a_host_longer_than_dns_allows():
+    assert hostname(environ(HTTP_HOST="a" * 250 + ".example.com", SERVER_NAME=None)) is None
+
+
+def test_hostname_is_none_when_handed_something_that_is_not_an_environ():
+    assert hostname(None) is None

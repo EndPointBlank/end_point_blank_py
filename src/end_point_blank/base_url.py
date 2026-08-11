@@ -123,6 +123,32 @@ def resolve(environ: Any, trust_proxy_headers: bool = True) -> Dict[str, Any]:
     return resolved
 
 
+def hostname(environ: Any) -> Optional[str]:
+    """The hostname alone, for the authorize path.
+
+    Deliberately not ``resolve(environ)["host"]``: this reads the ``Host``
+    header only, never the forwarded chain, whatever ``trust_proxy_headers``
+    is set to. The value feeds ``target_hostname`` and the access-token cache
+    key, and the portal resolves an application environment from it -- a value
+    matching no registered row is a hard 422 with no fallback, not a cache
+    miss. So this path takes the one view of the host that cannot change under
+    a proxy the deployment does not control, and gives up the proxy's more
+    accurate answer to get it.
+
+    Composed from the same ``_split_authority``/``_clean_host`` pair
+    ``resolve`` uses, so IPv6 bracketing, lowercasing, and shape and length
+    validation are identical between the two; only the authority's source
+    differs.
+    """
+    if not isinstance(environ, dict):
+        return None
+
+    host_part, _authority_port = _split_authority(
+        environ.get("HTTP_HOST") or environ.get("SERVER_NAME")
+    )
+    return _clean_host(host_part)
+
+
 def _last_hop(value: Any) -> Optional[str]:
     # A proxy that appends writes its own observation last. A proxy that
     # overwrites (nginx, Caddy, ALB) emits one value, where first and last are

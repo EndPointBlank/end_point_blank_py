@@ -10,6 +10,7 @@ from ..configuration import Configuration
 from ._http import post
 from .authentication_cache import AuthenticationCache
 from ..request_store import RequestStore
+from ..base_url import hostname as resolve_hostname
 from ..tokens.access_tokens import AccessTokens
 
 logger = logging.getLogger(__name__)
@@ -49,11 +50,9 @@ class EndpointAuthorize:
         config = Configuration()
         client_auth = environ.get("HTTP_AUTHORIZATION", "")
         method = environ.get("REQUEST_METHOD", "")
-        # HTTP_HOST includes the port for non-default ports (e.g.
-        # "localhost:3002"). Intake's app-env lookup matches on hostname only,
-        # so strip the port to match the Ruby gem's `request.host` behavior.
-        host_header = environ.get("HTTP_HOST") or environ.get("SERVER_NAME", "")
-        server_name = host_header.split(":")[0]
+        # Host header only, never the forwarded chain -- see base_url.hostname.
+        # The old `host_header.split(":")[0]` turned "[::1]:8443" into "[".
+        server_name = resolve_hostname(environ)
 
         # The version is part of the key because authorization is decided per
         # endpoint version, and so is the deprecation carried back with it.
