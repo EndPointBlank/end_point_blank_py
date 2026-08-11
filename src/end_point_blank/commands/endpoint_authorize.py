@@ -86,7 +86,11 @@ class EndpointAuthorize:
         response = post(config.authorize_url, auth, body)
 
         if response is not None and response.status_code == 401 and auth.startswith("Bearer "):
-            AccessTokens().remove(server_name)
+            # Hand back the token that was rejected rather than clearing
+            # whatever is held now: under load it may already have been replaced
+            # by another request that got here first, and dropping that one
+            # would send the whole wave to exchange again.
+            AccessTokens().invalidate(auth[len("Bearer "):])
             auth = Authorization.header(server_name)
             response = post(config.authorize_url, auth, body)
 

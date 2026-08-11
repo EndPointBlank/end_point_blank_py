@@ -194,13 +194,16 @@ class TestDeprecation:
 class TestTheTokenRetry:
     def test_a_401_on_a_bearer_token_clears_it_and_retries_once(self):
         with patch.object(ea.Authorization, "header", return_value="Bearer stale-token"):
-            with patch.object(ea.AccessTokens, "remove") as remove:
+            with patch.object(ea.AccessTokens, "invalidate") as invalidate:
                 with patch.object(ea, "post", side_effect=[response(401), response(201)]) as post:
                     result = EndpointAuthorize.authorize(environ(), "/students", "1")
 
         assert result.status_code == 201
         assert post.call_count == 2
-        remove.assert_called_once_with("localhost")
+        # The rejected token, not the hostname: under load the held token may
+        # already have been replaced, and only the caller that was actually
+        # rejected should cause an exchange.
+        invalidate.assert_called_once_with("stale-token")
 
     def test_a_401_on_basic_auth_is_not_retried(self):
         # Basic credentials do not go stale the way a token does; retrying would
@@ -213,7 +216,7 @@ class TestTheTokenRetry:
 
     def test_a_retry_that_also_fails_returns_the_failure(self):
         with patch.object(ea.Authorization, "header", return_value="Bearer stale-token"):
-            with patch.object(ea.AccessTokens, "remove"):
+            with patch.object(ea.AccessTokens, "invalidate"):
                 with patch.object(ea, "post", side_effect=[response(401), response(401)]):
                     result = EndpointAuthorize.authorize(environ(), "/students", "1")
 
@@ -227,7 +230,7 @@ class TestFailureResponses:
 
     def test_returns_none_when_the_retry_also_yields_nothing(self):
         with patch.object(ea.Authorization, "header", return_value="Bearer stale"):
-            with patch.object(ea.AccessTokens, "remove"):
+            with patch.object(ea.AccessTokens, "invalidate"):
                 with patch.object(ea, "post", side_effect=[response(401), None]):
                     assert EndpointAuthorize.authorize(environ(), "/students", "1") is None
 

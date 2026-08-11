@@ -4,8 +4,14 @@ token served past its life produces a 401 storm; a token thrown away too eagerly
 produces a token-generation storm. Both failure modes are invisible in
 development and expensive in production, so the expiry arithmetic is covered
 here in detail.
+
+Intake issues a token against the application environment the authenticating
+credential belongs to, not against the hostname the request names. One process
+authenticates as one application environment, so it holds one token and the
+hostname is only ever part of the generation payload.
 """
 
+import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -42,13 +48,15 @@ class TestFetchingAToken:
 
         assert generate.call_count == 1
 
-    def test_treats_hostnames_case_insensitively(self):
-        # The hostname reaches us from the Host header, whose case is the
-        # caller's choice. Keying on it verbatim would mint a second token for
-        # every casing variant a client happens to send.
-        with patch(GENERATOR, return_value=payload()) as generate:
-            AccessTokens().token("API.Example.COM")
-            AccessTokens().token("api.example.com")
+    def test_serves_every_hostname_from_the_one_token(self):
+        # The hostname reaches us from the Host header, so the caller chooses
+        # it. Keying the cache on it meant a novel value cost a token exchange
+        # and a database lookup on intake, for a token intake never scoped to
+        # the hostname in the first place.
+        with patch(GENERATOR, return_value=payload("tok-1")) as generate:
+            assert AccessTokens().token("a.example.com") == "tok-1"
+            assert AccessTokens().token("b.example.com") == "tok-1"
+            assert AccessTokens().token("never.seen.example.com") == "tok-1"
 
         assert generate.call_count == 1
 
@@ -74,14 +82,7 @@ class TestFetchingAToken:
         with patch(GENERATOR, return_value=payload(expires_in_seconds=-1)):
             AccessTokens().token("api.example.com")
 
-        assert AccessTokens().exists("api.example.com") is False
-
-    def test_keeps_hosts_separate(self):
-        responses = [payload("tok-a"), payload("tok-b")]
-
-        with patch(GENERATOR, side_effect=responses):
-            assert AccessTokens().token("a.example.com") == "tok-a"
-            assert AccessTokens().token("b.example.com") == "tok-b"
+        assert AccessTokens().exists() is False
 
 
 class TestWhenGenerationFails:
@@ -106,7 +107,18 @@ class TestWhenGenerationFails:
         with patch(GENERATOR, return_value=None):
             assert AccessTokens().token("api.example.com") is None
 
-        assert AccessTokens().exists("api.example.com") is False
+        assert AccessTokens().exists() is False
+
+    def test_leaves_a_live_token_alone_because_it_never_asks(self):
+        # A live token is served without a generation call at all, so a hostname
+        # intake would refuse cannot disturb it.
+        with patch(GENERATOR, return_value=payload("tok-1")) as generate:
+            AccessTokens().token("api.example.com")
+
+            assert AccessTokens().token("bogus.example.com") == "tok-1"
+            assert generate.call_count == 1
+
+        assert AccessTokens().exists() is True
 
     def test_does_not_cache_the_failure(self):
         with patch(GENERATOR, return_value=None):
@@ -118,14 +130,14 @@ class TestWhenGenerationFails:
 
 
 class TestExists:
-    def test_is_false_for_a_host_never_seen(self):
-        assert AccessTokens().exists("api.example.com") is False
+    def test_is_false_before_any_token_is_issued(self):
+        assert AccessTokens().exists() is False
 
     def test_is_true_for_a_freshly_generated_token(self):
         with patch(GENERATOR, return_value=payload()):
             AccessTokens().token("api.example.com")
 
-        assert AccessTokens().exists("api.example.com") is True
+        assert AccessTokens().exists() is True
 
     def test_is_false_when_less_than_thirty_seconds_remain(self):
         # ``Authorization.header`` treats "exists" as "safe to present", so a
@@ -133,49 +145,79 @@ class TestExists:
         with patch(GENERATOR, return_value=payload(expires_in_seconds=10)):
             AccessTokens().token("api.example.com")
 
-        assert AccessTokens().exists("api.example.com") is False
+        assert AccessTokens().exists() is False
 
-    def test_matches_the_hostname_case_insensitively(self):
+
+class TestInvalidate:
+    def test_drops_the_current_token(self):
         with patch(GENERATOR, return_value=payload()):
+            current = AccessTokens().token("api.example.com")
+
+        AccessTokens().invalidate(current)
+
+        assert AccessTokens().exists() is False
+
+    def test_ignores_a_token_that_has_already_been_replaced(self):
+        # What stops a 401 from stampeding. Every request in flight when a token
+        # is rejected reports the same stale value; only the first should cause
+        # an exchange, because the rest are holding a token that has already
+        # been replaced and clearing for them would discard a good one.
+        with patch(GENERATOR, side_effect=[payload("tok-1"), payload("tok-2")]) as generate:
+            stale = AccessTokens().token("api.example.com")
+            AccessTokens().invalidate(stale)
             AccessTokens().token("api.example.com")
 
-        assert AccessTokens().exists("API.EXAMPLE.COM") is True
+            AccessTokens().invalidate(stale)
 
+            assert AccessTokens().token("api.example.com") == "tok-2"
+            assert generate.call_count == 2
 
-class TestRemove:
-    def test_drops_the_cached_token(self):
-        with patch(GENERATOR, return_value=payload()):
+    def test_ignores_none(self):
+        with patch(GENERATOR, return_value=payload("tok-1")) as generate:
             AccessTokens().token("api.example.com")
 
-        AccessTokens().remove("api.example.com")
+            AccessTokens().invalidate(None)
 
-        assert AccessTokens().exists("api.example.com") is False
-
-    def test_matches_the_hostname_case_insensitively(self):
-        # ``EndpointAuthorize`` removes using the host it derived from the
-        # request; if the casing had to match the fetch, the 401-retry would
-        # re-present the same rejected token.
-        with patch(GENERATOR, return_value=payload()):
-            AccessTokens().token("api.example.com")
-
-        AccessTokens().remove("API.EXAMPLE.COM")
-
-        assert AccessTokens().exists("api.example.com") is False
-
-    def test_is_silent_for_a_host_never_seen(self):
-        AccessTokens().remove("nowhere.example.com")
+            assert AccessTokens().token("api.example.com") == "tok-1"
+            assert generate.call_count == 1
 
 
 class TestClear:
-    def test_removes_every_cached_token(self):
-        with patch(GENERATOR, side_effect=[payload("a"), payload("b")]):
+    def test_drops_the_cached_token(self):
+        with patch(GENERATOR, return_value=payload("a")):
             AccessTokens().token("a.example.com")
-            AccessTokens().token("b.example.com")
 
         AccessTokens().clear()
 
-        assert AccessTokens().exists("a.example.com") is False
-        assert AccessTokens().exists("b.example.com") is False
+        assert AccessTokens().exists() is False
+
+
+class TestConcurrency:
+    def test_callers_racing_for_a_token_share_one_generation(self):
+        # The cached token is read without the lock; the lock is only taken to
+        # exchange. A caller that waited for it has to re-read rather than
+        # exchange again, or a burst at startup fans out into one call each.
+        callers = 8
+        start = threading.Barrier(callers)
+        results = []
+        results_lock = threading.Lock()
+
+        def call():
+            start.wait()
+            value = AccessTokens().token("api.example.com")
+            with results_lock:
+                results.append(value)
+
+        with patch(GENERATOR, return_value=payload("tok-1")) as generate:
+            threads = [threading.Thread(target=call) for _ in range(callers)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            assert generate.call_count == 1
+
+        assert results == ["tok-1"] * callers
 
 
 class TestTheExpiryTimestamp:
@@ -183,13 +225,13 @@ class TestTheExpiryTimestamp:
         with patch(GENERATOR, return_value={"token": "t", "expired_at": "2099-01-01T00:00:00Z"}):
             AccessTokens().token("api.example.com")
 
-        assert AccessTokens().exists("api.example.com") is True
+        assert AccessTokens().exists() is True
 
     def test_accepts_an_explicit_utc_offset(self):
         with patch(GENERATOR, return_value={"token": "t", "expired_at": "2099-01-01T00:00:00+00:00"}):
             AccessTokens().token("api.example.com")
 
-        assert AccessTokens().exists("api.example.com") is True
+        assert AccessTokens().exists() is True
 
     @pytest.mark.parametrize(
         "expired_at", ["not-a-date", "", None, 1893456000], ids=["garbage", "blank", "null", "epoch-int"]
@@ -200,13 +242,13 @@ class TestTheExpiryTimestamp:
         with patch(GENERATOR, return_value={"token": "t", "expired_at": expired_at}):
             AccessTokens().token("api.example.com")
 
-        assert AccessTokens().exists("api.example.com") is True
+        assert AccessTokens().exists() is True
 
     def test_falls_back_to_an_hour_when_the_expiry_is_absent(self):
         with patch(GENERATOR, return_value={"token": "t"}):
             AccessTokens().token("api.example.com")
 
-        assert AccessTokens().exists("api.example.com") is True
+        assert AccessTokens().exists() is True
 
 
 class TestTheSingleton:
