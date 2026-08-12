@@ -99,9 +99,7 @@ def resolve(environ: Any, trust_proxy_headers: bool = True) -> Dict[str, Any]:
         # Either no X-Forwarded-Host was sent, or the one that was sent didn't
         # parse to a usable hostname -- both fall back to Host/SERVER_NAME the
         # same way.
-        host_part, authority_port = _split_authority(
-            environ.get("HTTP_HOST") or environ.get("SERVER_NAME")
-        )
+        host_part, authority_port = _split_authority(_host_authority(environ))
         host = _clean_host(host_part)
 
     port = (
@@ -143,9 +141,7 @@ def hostname(environ: Any) -> Optional[str]:
     if not isinstance(environ, dict):
         return None
 
-    host_part, _authority_port = _split_authority(
-        environ.get("HTTP_HOST") or environ.get("SERVER_NAME")
-    )
+    host_part, _authority_port = _split_authority(_host_authority(environ))
     return _clean_host(host_part)
 
 
@@ -157,6 +153,30 @@ def _last_hop(value: Any) -> Optional[str]:
         return None
     hops = [hop.strip() for hop in value.split(",") if hop.strip()]
     return hops[-1] if hops else None
+
+
+def _host_authority(environ: Any) -> Optional[str]:
+    """The authority to read the host from: the ``Host`` header, else the server name.
+
+    An empty ``Host`` header is treated as absent, not as a present-but-unusable
+    value. A caller that sends ``Host:`` with no value has said nothing about
+    which host it meant, so there is nothing there to prefer over the server
+    name. The server name is a server-side value the caller cannot steer, so
+    falling through to it concedes no control the caller did not already have.
+
+    On the authorize path the alternative is worse than cosmetic: resolving to
+    ``None`` there drops the request to Basic auth and skips the token mint,
+    whereas falling through yields a usable application-environment lookup key.
+
+    Python, Java and JS already fell through, because "" is falsy in all three;
+    Ruby and Elixir stopped, because "" is truthy in both. One expression
+    written five times, diverging only on the empty case. It now lives at one
+    site per SDK, and this comment is why.
+    """
+    host_header = environ.get("HTTP_HOST")
+    if host_header:
+        return host_header
+    return environ.get("SERVER_NAME")
 
 
 def _split_authority(value: Any) -> Tuple[Optional[str], Optional[str]]:
