@@ -17,6 +17,7 @@ from end_point_blank.commands.authentication_cache import AuthenticationCache
 from end_point_blank.commands.endpoint_authorize import EndpointAuthorize, _CachedResponse
 from end_point_blank.configuration import Configuration
 from end_point_blank.request_store import RequestStore
+from end_point_blank.tokens.access_tokens import AccessTokens
 
 GENERATOR = "end_point_blank.commands.generate_access_token.GenerateAccessToken.token"
 
@@ -42,10 +43,17 @@ def response(status=201, payload=None, text=""):
 
 @pytest.fixture(autouse=True)
 def _clean():
+    # The token cache is cleared too. ``test_never_requests_an_access_token`` is
+    # the pin for this whole change, and a warm cache would let a regression
+    # that reintroduced ``Authorization.header(server_name)`` slip through --
+    # it would serve the held token instead of minting. Cold only by suite
+    # ordering is not cold.
     AuthenticationCache().clear()
+    AccessTokens().clear()
     RequestStore.set({})
     yield
     AuthenticationCache().clear()
+    AccessTokens().clear()
     RequestStore.clear()
 
 

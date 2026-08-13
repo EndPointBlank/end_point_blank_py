@@ -107,10 +107,17 @@ class TestKeyingOnTheBaseUrl:
 
         assert generate.call_args_list[1] == call("https://example.com/ordersXX")
 
-    def test_a_non_canonical_url_misses_rather_than_guessing(self):
-        # The SDK does not normalize -- intake owns that rule. A trailing slash
-        # the canonical form does not have costs one extra request, which is
-        # cheaper than being wrong.
+    @pytest.mark.parametrize(
+        "requested",
+        ["https://example.com/Orders", "https://example.com/orders?page=2"],
+        ids=["different-case", "query-string"],
+    )
+    def test_a_non_canonical_url_misses_rather_than_guessing(self, requested):
+        # The SDK does not normalize -- intake owns that rule. A URL that does
+        # not match character-for-character costs one extra request, which is
+        # cheaper than presenting a token issued for somewhere else. (A query
+        # string should have been stripped before it got here; missing is the
+        # right answer when it was not.)
         responses = [
             payload("tok-1", base_url="https://example.com/orders"),
             payload("tok-2", base_url="https://example.com/orders"),
@@ -119,17 +126,18 @@ class TestKeyingOnTheBaseUrl:
         with patch(GENERATOR, side_effect=responses) as generate:
             AccessTokens().token("https://example.com/orders")
 
-            assert AccessTokens().token("https://example.com/Orders") == "tok-2"
+            assert AccessTokens().token(requested) == "tok-2"
             assert generate.call_count == 2
 
-    def test_falls_back_to_the_requested_url_when_the_response_omits_base_url(self):
-        # An intake that does not send base_url must not poison every lookup
-        # with a None key.
-        with patch(GENERATOR, return_value={"token": "tok-1"}) as generate:
-            assert AccessTokens().token("https://example.com/orders") == "tok-1"
-            assert AccessTokens().token("https://example.com/orders/42") == "tok-1"
+    def test_a_trailing_slash_still_matches(self):
+        # Falls out of the "key + /" rule rather than from any normalization:
+        # ".../orders/" starts with ".../orders/". Worth pinning, because it is
+        # the one non-identical form that does NOT cost an extra mint.
+        with patch(GENERATOR, return_value=payload("tok-1", base_url="https://example.com/orders")) as generate:
+            AccessTokens().token("https://example.com/orders")
 
-        assert generate.call_count == 1
+            assert AccessTokens().token("https://example.com/orders/") == "tok-1"
+            assert generate.call_count == 1
 
 
 class TestFetchingAToken:
@@ -181,6 +189,21 @@ class TestWhenGenerationFails:
     def test_returns_none_when_the_token_field_is_blank(self):
         with patch(GENERATOR, return_value={"token": ""}):
             assert AccessTokens().token(BASE) is None
+
+    def test_a_response_without_a_base_url_is_a_failed_mint(self, caplog):
+        # Without a base URL there is no application environment to cache the
+        # token under, so no token is handed back either. Keying on the caller's
+        # URL instead would store an entry per resource URL, and nothing here
+        # evicts -- a bounded extra request traded for an unbounded leak.
+        with patch(GENERATOR, return_value={"token": "tok-1"}) as generate:
+            assert AccessTokens().token("https://example.com/orders/1") is None
+            assert AccessTokens().token("https://example.com/orders/2") is None
+
+        assert AccessTokens().exists("https://example.com/orders/1") is False
+        # Nothing was cached, so the second call had to ask again.
+        assert generate.call_count == 2
+        # Says what actually happened: a broken server, not a bad request.
+        assert "carried a token but no base_url" in caplog.text
 
     def test_discards_the_stale_token_when_a_refresh_fails(self):
         # A failed refresh must not leave the expiring token behind claiming to
@@ -239,6 +262,16 @@ class TestExists:
 
         assert AccessTokens().exists(BASE) is True
 
+    def test_is_true_for_a_sub_path_of_a_cached_base_url(self):
+        # ``exists`` goes through the same prefix matcher ``token`` does, so a
+        # deeper path under a cached base URL reads as covered. Answering False
+        # here would report a token as absent that the very next ``token`` call
+        # serves from cache.
+        with patch(GENERATOR, return_value=payload()):
+            AccessTokens().token(BASE)
+
+        assert AccessTokens().exists(BASE + "/widgets/42") is True
+
     def test_is_false_for_a_base_url_no_held_token_covers(self):
         with patch(GENERATOR, return_value=payload()):
             AccessTokens().token(BASE)
@@ -246,8 +279,11 @@ class TestExists:
         assert AccessTokens().exists("https://elsewhere.example.com") is False
 
     def test_is_false_when_less_than_thirty_seconds_remain(self):
-        # ``Authorization.header`` treats "exists" as "safe to present", so a
-        # token about to expire has to read as absent.
+        # ``exists`` answers "is a usable token already held", and a token with
+        # seconds left will have expired by the time a request carrying it
+        # lands -- so the floor is 30 seconds rather than zero. (It is not the
+        # same floor ``token`` refreshes at: that one is two minutes, because
+        # refreshing early is cheap and being caught short is not.)
         with patch(GENERATOR, return_value=payload(expires_in_seconds=10)):
             AccessTokens().token(BASE)
 

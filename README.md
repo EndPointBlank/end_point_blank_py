@@ -165,8 +165,9 @@ epb.configure()  # picks up all ENDPOINTBLANK_* env vars above
 ### Authorization
 
 `end_point_blank.authorization.Authorization` builds the `Authorization` header used on
-outbound calls: a `Bearer` token for the target you are about to call, or HTTP Basic auth
-from `client_id`/`client_secret` when no target is given.
+outbound calls: a `Bearer` token for the target you are about to call, otherwise HTTP Basic
+auth from `client_id`/`client_secret` — which covers both giving no target and a token that
+could not be obtained.
 
 ```python
 from end_point_blank.authorization import Authorization

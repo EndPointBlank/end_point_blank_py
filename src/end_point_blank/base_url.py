@@ -129,9 +129,8 @@ def hostname(environ: Any) -> Optional[str]:
     is set to. The value feeds ``target_hostname``, and the portal resolves an
     application environment from it -- a value matching no registered row is a
     hard 422 with no fallback, not a cache miss. So this path takes the one view
-    of the host that cannot change under
-    a proxy the deployment does not control, and gives up the proxy's more
-    accurate answer to get it.
+    of the host that cannot change under a proxy the deployment does not
+    control, and gives up the proxy's more accurate answer to get it.
 
     Composed from the same ``_split_authority``/``_clean_host`` pair
     ``resolve`` uses, so IPv6 bracketing, lowercasing, and shape and length

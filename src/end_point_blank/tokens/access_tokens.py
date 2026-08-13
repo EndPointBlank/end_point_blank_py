@@ -58,7 +58,8 @@ class AccessTokens:
         :param base_url: The URL you are about to call, with any query string
             and fragment removed. It is sent verbatim; intake normalizes it and
             matches it against registered base URLs by longest path prefix.
-        :returns: The access token string, or ``None`` if generation failed.
+        :returns: The access token string, or ``None`` if generation failed --
+            which includes a response that carried a token but no ``base_url``.
         """
         entry = self._match(base_url)
         if self._usable(entry):
@@ -73,11 +74,15 @@ class AccessTokens:
             from ..commands.generate_access_token import GenerateAccessToken
             payload = GenerateAccessToken.token(base_url)
 
-            if payload and payload.get("token"):
-                # Key on what intake resolved to, falling back to the requested
-                # URL only if the response omits it — an older intake would
-                # otherwise poison every lookup with a None key.
-                key = payload.get("base_url") or base_url
+            # The key is what intake resolved to, and only that. There is no
+            # fallback to the requested URL: that would key on the resource the
+            # caller happened to ask about, so a service walking /orders/1,
+            # /orders/2, /orders/3 would mint and store a token per resource,
+            # and nothing here evicts. Without a base URL the right application
+            # cannot be found, so no token is handed back either.
+            key = payload.get("base_url") if payload else None
+
+            if payload and payload.get("token") and key:
                 self._entries = {
                     **self._entries,
                     key: {
@@ -95,8 +100,11 @@ class AccessTokens:
             stale = self._match_key(base_url, self._entries)
             if stale is not None:
                 self._entries = {k: v for k, v in self._entries.items() if k != stale}
-            error = payload.get("error") if payload else "unknown error"
-            logger.error("Failed to generate access token for %s: %s", base_url, error)
+            logger.error(
+                "Failed to generate access token for %s: %s",
+                base_url,
+                self._failure_reason(payload),
+            )
             return None
 
     def exists(self, base_url: str) -> bool:
@@ -156,6 +164,20 @@ class AccessTokens:
         entries = self._entries  # One atomic read; writes replace, never mutate.
         key = self._match_key(base_url, entries)
         return entries.get(key) if key is not None else None
+
+    @staticmethod
+    def _failure_reason(payload: Optional[dict]) -> str:
+        """Why a mint produced no usable token, for the log."""
+        if not payload:
+            return "no response"
+        if payload.get("error"):
+            return payload["error"]
+        if payload.get("token"):
+            # Distinct from a rejected request: intake's base_url is NOT NULL,
+            # and it answers 422 rather than minting when the caller's URL
+            # resolves to no environment. A 201 without one is a broken server.
+            return "response carried a token but no base_url"
+        return "no token in response"
 
     @staticmethod
     def _usable(entry: Optional[dict]) -> bool:
