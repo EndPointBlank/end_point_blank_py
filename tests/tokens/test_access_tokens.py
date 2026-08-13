@@ -509,6 +509,44 @@ class TestANilBaseUrl:
         assert AccessTokens().exists(None) is False
 
 
+class TestARefreshThatResolvesToADifferentCanonicalBaseUrl:
+    """The success path used to add the new key without removing the stale
+    entry it had just matched -- only the failure path deleted. So when an
+    entry stored under a longer key is refreshed and intake answers with a
+    shorter, different canonical base URL, the old key survives and, being
+    longer, keeps winning the match forever: a permanent mint-on-every-call
+    storm that only a process restart clears."""
+
+    OLD = "https://x.example.com/orders"
+    NEW = "https://x.example.com"
+
+    def _seed_and_refresh_to_a_shorter_url(self):
+        # Seed under the longer key with a short TTL so the very next lookup
+        # finds it inside the refresh buffer and triggers a mint.
+        with patch(GENERATOR, return_value=payload("old", base_url=self.OLD, expires_in_seconds=60)):
+            AccessTokens().token(self.OLD)
+
+        # Refresh resolves to a shorter, different canonical base URL.
+        with patch(GENERATOR, return_value=payload("new", base_url=self.NEW, expires_in_seconds=3600)):
+            assert AccessTokens().token(self.OLD) == "new"
+
+    def test_the_matched_key_is_removed_once_the_canonical_url_changes(self):
+        self._seed_and_refresh_to_a_shorter_url()
+
+        assert self.OLD not in AccessTokens()._entries
+
+    def test_a_follow_up_call_is_served_from_cache_rather_than_minting_again(self):
+        # The actual harm: if the stale, longer key survives, it shadows the
+        # good, shorter one -- longest match wins -- and every subsequent
+        # call re-mints because the shadowing entry is still stale.
+        self._seed_and_refresh_to_a_shorter_url()
+
+        with patch(GENERATOR, return_value=payload("should-not-be-minted")) as generate:
+            assert AccessTokens().token(self.OLD) == "new"
+
+        assert generate.call_count == 0
+
+
 class TestTheSingleton:
     def test_every_construction_shares_one_cache(self):
         # Callers construct ``AccessTokens()`` fresh at each use site; if that

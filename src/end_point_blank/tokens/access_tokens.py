@@ -71,6 +71,15 @@ class AccessTokens:
             if self._usable(entry):
                 return entry["token"]
 
+            # The entry (if any) this request is refreshing. Captured once,
+            # before the mint, and reused by both outcomes below: the failure
+            # path deletes it outright, and the success path deletes it too
+            # when intake's answer resolves to a different canonical key --
+            # otherwise the stale entry just matched would survive alongside
+            # the new one and, being the longer/older key, could keep winning
+            # the match forever.
+            matched_key = self._match_key(base_url, self._entries)
+
             from ..commands.generate_access_token import GenerateAccessToken
             payload = GenerateAccessToken.token(base_url)
 
@@ -83,8 +92,11 @@ class AccessTokens:
             key = payload.get("base_url") if payload else None
 
             if payload and payload.get("token") and key:
+                entries = self._entries
+                if matched_key is not None and matched_key != key:
+                    entries = {k: v for k, v in entries.items() if k != matched_key}
                 self._entries = {
-                    **self._entries,
+                    **entries,
                     key: {
                         "token": payload["token"],
                         "expired_at": self._parse_expiry(payload.get("expired_at")),
@@ -97,7 +109,7 @@ class AccessTokens:
             # 401. Only the entry that covers this URL goes: the longest match
             # is the one that was just found unusable, so a shorter, still-good
             # entry survives.
-            stale = self._match_key(base_url, self._entries)
+            stale = matched_key
             if stale is not None:
                 self._entries = {k: v for k, v in self._entries.items() if k != stale}
             logger.error(
