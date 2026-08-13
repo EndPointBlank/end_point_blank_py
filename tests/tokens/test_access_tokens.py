@@ -467,6 +467,48 @@ class TestTheExpiryTimestamp:
         assert AccessTokens().exists(BASE) is True
 
 
+class TestANilBaseUrl:
+    """``token(None)`` / ``exists(None)`` used to behave differently depending
+    on cache state, because the match loop only touches its argument once
+    there is something to iterate over:
+
+    - cold cache: the loop body never runs, nothing raises, and the call
+      proceeds to mint with a null base URL.
+    - warm cache: the loop body runs and ``None.startswith(...)`` raises
+      ``AttributeError``.
+
+    Same call, two outcomes, decided entirely by unrelated earlier traffic.
+    Both must now take the same "no match" miss path -- the warm-cache case
+    is the one that matters, because a cold cache never raised in the first
+    place and would pass without the fix."""
+
+    def test_a_cold_cache_does_not_raise_and_mints_with_the_nil_url(self):
+        with patch(GENERATOR, return_value=None) as generate:
+            assert AccessTokens().token(None) is None
+
+        assert generate.call_args == call(None)
+
+    def test_a_warm_cache_reaches_the_same_outcome_as_a_cold_one(self):
+        # Seed an entry first so the match loop has something to iterate --
+        # this is the case that used to raise AttributeError instead of
+        # reaching the generator at all.
+        with patch(GENERATOR, return_value=payload("tok-1")):
+            AccessTokens().token(BASE)
+
+        with patch(GENERATOR, return_value=None) as generate:
+            assert AccessTokens().token(None) is None
+
+        assert generate.call_args == call(None)
+        # The unrelated warm entry must survive untouched.
+        assert AccessTokens().exists(BASE) is True
+
+    def test_exists_is_false_for_none_with_a_warm_cache(self):
+        with patch(GENERATOR, return_value=payload("tok-1")):
+            AccessTokens().token(BASE)
+
+        assert AccessTokens().exists(None) is False
+
+
 class TestTheSingleton:
     def test_every_construction_shares_one_cache(self):
         # Callers construct ``AccessTokens()`` fresh at each use site; if that

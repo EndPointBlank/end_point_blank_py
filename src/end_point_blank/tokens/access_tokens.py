@@ -152,7 +152,16 @@ class AccessTokens:
 
         Takes *entries* rather than reading ``self._entries`` so the caller
         decides which snapshot is being scanned.
+
+        A nil/empty *base_url* is always "no match", checked before the loop
+        rather than left to be discovered by it. Otherwise a cold cache (the
+        loop body never runs) and a warm one (``None.startswith(...)`` raises
+        ``AttributeError``) would disagree on the outcome of the exact same
+        call, decided only by unrelated earlier traffic.
         """
+        if not base_url:
+            return None
+
         best = None
         for key in entries:
             if base_url == key or base_url.startswith(key + "/"):
