@@ -4,7 +4,9 @@ deploy, in the app's startup path, so a raise here is a failed deploy rather
 than a lost telemetry row.
 """
 
+import re
 import socket
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +16,20 @@ from end_point_blank.commands.endpoint_update import EndpointUpdate
 from end_point_blank.configuration import Configuration
 
 ENDPOINTS = [{"path": "/students", "http_method": "GET", "endpoint_versions": ["v1"]}]
+
+# tests/commands/test_endpoint_update.py -> tests/commands -> tests -> repo root
+PYPROJECT_TOML = Path(__file__).resolve().parents[2] / "pyproject.toml"
+
+
+def _manifest_version() -> str:
+    """The version declared in ``[project]`` of pyproject.toml -- read with a
+    plain regex rather than a TOML parser, since the package supports Python
+    3.10 and ``tomllib`` only ships from 3.11. Deliberately independent of
+    anything under ``src/``: the point is to catch the two drifting apart, so
+    the check cannot import the value it is meant to verify."""
+    match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', PYPROJECT_TOML.read_text())
+    assert match, f"no [project] version found in {PYPROJECT_TOML}"
+    return match.group(1)
 
 
 @pytest.fixture(autouse=True)
@@ -61,7 +77,12 @@ class TestThePayload:
         assert send_and_capture(ENDPOINTS)[0][2]["hostname"] == socket.gethostname()
 
     def test_reports_the_client_library_version(self):
-        assert send_and_capture(ENDPOINTS)[0][2]["lib_version"] == eu.VERSION
+        # Pinned against the package manifest, not against ``eu.VERSION`` --
+        # asserting against the same constant that produces the payload would
+        # agree with whatever that constant says, even a stale duplicate
+        # literal. That shape is exactly how a second, unreleased "0.2.2"
+        # survived here undetected.
+        assert send_and_capture(ENDPOINTS)[0][2]["lib_version"] == _manifest_version()
 
     def test_reports_the_configured_application_version(self, _config):
         _config.application_version = "2026.07.31"
