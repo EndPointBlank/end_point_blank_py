@@ -14,21 +14,25 @@ class GenerateAccessToken:
     """
     Generates an access token by calling the EndPointBlank API.
 
-    Sends the hostname (and optional TTL) to the configured ``access_token_url``
-    and returns the parsed response dict containing ``token`` and ``expired_at``.
+    Sends the base URL (and optional TTL) to the configured ``access_token_url``
+    and returns the parsed response dict containing ``token``, ``expired_at``
+    and ``base_url``.
 
     Equivalent to the Ruby gem's ``EndPointBlank::Commands::GenerateAccessToken``.
     """
 
     @staticmethod
-    def token(hostname: str) -> Optional[Dict[str, Any]]:
+    def token(base_url: str) -> Optional[Dict[str, Any]]:
         """
-        Requests a new access token for *hostname*.
+        Requests a new access token for *base_url*.
 
-        :returns: A dict with ``token`` and ``expired_at``, or ``None`` on failure.
+        :param base_url: Sent verbatim. intake normalizes it and matches it
+            against registered base URLs by longest path prefix.
+        :returns: A dict with ``token``, ``expired_at`` and ``base_url``, or
+            ``None`` on failure.
         """
         config = Configuration()
-        body: Dict[str, Any] = {"hostname": hostname}
+        body: Dict[str, Any] = {"base_url": base_url}
         if config.token_ttl is not None:
             body["token_ttl"] = config.token_ttl
 

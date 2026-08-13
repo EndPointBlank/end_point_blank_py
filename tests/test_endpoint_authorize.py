@@ -1,13 +1,13 @@
 """
 ``EndpointAuthorize`` is the SDK's highest-risk module and, until now, its least
-tested. It does credential exchange, retry-on-401, caching, and it decides
-whether a request is allowed to proceed — and both bugs found during the RFC
-header work lived here.
+tested. It authenticates to intake, caches, and it decides whether a request is
+allowed to proceed — and both bugs found during the RFC header work lived here.
 
 These cover the whole surface: the cache (hit, miss, key composition), the
-token-retry path, every response class, and the deprecation extraction.
+credential it presents, every response class, and the deprecation extraction.
 """
 
+import base64
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,7 +15,11 @@ import pytest
 from end_point_blank.commands import endpoint_authorize as ea
 from end_point_blank.commands.authentication_cache import AuthenticationCache
 from end_point_blank.commands.endpoint_authorize import EndpointAuthorize, _CachedResponse
+from end_point_blank.configuration import Configuration
 from end_point_blank.request_store import RequestStore
+from end_point_blank.tokens.access_tokens import AccessTokens
+
+GENERATOR = "end_point_blank.commands.generate_access_token.GenerateAccessToken.token"
 
 
 def environ(**overrides):
@@ -39,17 +43,30 @@ def response(status=201, payload=None, text=""):
 
 @pytest.fixture(autouse=True)
 def _clean():
+    # The token cache is cleared too. ``test_never_requests_an_access_token`` is
+    # the pin for this whole change, and a warm cache would let a regression
+    # that reintroduced ``Authorization.header(server_name)`` slip through --
+    # it would serve the held token instead of minting. Cold only by suite
+    # ordering is not cold.
     AuthenticationCache().clear()
+    AccessTokens().clear()
     RequestStore.set({})
     yield
     AuthenticationCache().clear()
+    AccessTokens().clear()
     RequestStore.clear()
 
 
 @pytest.fixture(autouse=True)
-def _auth_header():
-    with patch.object(ea.Authorization, "header", return_value="Basic c2VydmVy"):
-        yield
+def _credentials():
+    # The real ``Authorization.header`` is used, not a stub: now that this call
+    # is plain Basic it is pure — no cache, no network — and stubbing it would
+    # hide the very thing ``TestTheCredentialItPresents`` is checking.
+    config = Configuration()
+    config.client_id = "test-client-id"
+    config.client_secret = "test-client-secret"
+    yield config
+    config._init_defaults()
 
 
 class TestTheAuthorizedPath:
@@ -191,48 +208,45 @@ class TestDeprecation:
         assert RequestStore.get_deprecation() is None
 
 
-class TestTheTokenRetry:
-    def test_a_401_on_a_bearer_token_clears_it_and_retries_once(self):
-        with patch.object(ea.Authorization, "header", return_value="Bearer stale-token"):
-            with patch.object(ea.AccessTokens, "invalidate") as invalidate:
-                with patch.object(ea, "post", side_effect=[response(401), response(201)]) as post:
-                    result = EndpointAuthorize.authorize(environ(), "/students", "1")
+class TestTheCredentialItPresents:
+    """This call goes to intake, which already holds this service's credential.
+    Minting an access token in order to present it back was a hop that bought
+    nothing, so the call is plain Basic — and with no Bearer there is nothing
+    that can go stale, which is why the 401 retry that used to live here is
+    gone."""
 
-        assert result.status_code == 201
-        assert post.call_count == 2
-        # The rejected token, not the hostname: under load the held token may
-        # already have been replaced, and only the caller that was actually
-        # rejected should cause an exchange.
-        invalidate.assert_called_once_with("stale-token")
+    def test_authenticates_with_the_configured_basic_credentials(self):
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(environ(), "/students", "1")
 
-    def test_a_401_on_basic_auth_is_not_retried(self):
-        # Basic credentials do not go stale the way a token does; retrying would
-        # be a second identical request that fails identically.
+        header = post.call_args[0][1]
+        assert header.startswith("Basic ")
+        assert base64.b64decode(header[len("Basic "):]).decode() == "test-client-id:test-client-secret"
+
+    def test_never_requests_an_access_token(self):
+        # The assertion that pins the change. A token here would be a wasted
+        # round trip on every cache miss, on every inbound request.
+        with patch(GENERATOR) as generate:
+            with patch.object(ea, "post", return_value=response()):
+                EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        generate.assert_not_called()
+
+    def test_a_401_is_returned_without_a_retry(self):
+        # Basic credentials do not go stale the way a token does. A 401 now
+        # means the credential is wrong, which is worth surfacing rather than
+        # retrying with the identical request.
         with patch.object(ea, "post", return_value=response(401)) as post:
             result = EndpointAuthorize.authorize(environ(), "/students", "1")
 
         assert result.status_code == 401
         assert post.call_count == 1
 
-    def test_a_retry_that_also_fails_returns_the_failure(self):
-        with patch.object(ea.Authorization, "header", return_value="Bearer stale-token"):
-            with patch.object(ea.AccessTokens, "invalidate"):
-                with patch.object(ea, "post", side_effect=[response(401), response(401)]):
-                    result = EndpointAuthorize.authorize(environ(), "/students", "1")
-
-        assert result.status_code == 401
-
 
 class TestFailureResponses:
     def test_returns_none_when_intake_is_unreachable(self):
         with patch.object(ea, "post", return_value=None):
             assert EndpointAuthorize.authorize(environ(), "/students", "1") is None
-
-    def test_returns_none_when_the_retry_also_yields_nothing(self):
-        with patch.object(ea.Authorization, "header", return_value="Bearer stale"):
-            with patch.object(ea.AccessTokens, "invalidate"):
-                with patch.object(ea, "post", side_effect=[response(401), None]):
-                    assert EndpointAuthorize.authorize(environ(), "/students", "1") is None
 
     @pytest.mark.parametrize("status", [400, 401, 403, 500])
     def test_a_failure_is_returned_and_not_cached(self, status):

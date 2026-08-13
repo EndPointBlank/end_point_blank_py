@@ -4,13 +4,12 @@ import logging
 import socket
 from typing import Any, Dict, List, Optional
 
+from .. import VERSION
 from ..authorization import Authorization
 from ..configuration import Configuration
 from ._http import post
 
 logger = logging.getLogger(__name__)
-
-VERSION = "0.2.2"
 
 
 class EndpointUpdate:
