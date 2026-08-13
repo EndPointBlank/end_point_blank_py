@@ -126,10 +126,10 @@ def hostname(environ: Any) -> Optional[str]:
 
     Deliberately not ``resolve(environ)["host"]``: this reads the ``Host``
     header only, never the forwarded chain, whatever ``trust_proxy_headers``
-    is set to. The value feeds ``target_hostname`` and the access-token cache
-    key, and the portal resolves an application environment from it -- a value
-    matching no registered row is a hard 422 with no fallback, not a cache
-    miss. So this path takes the one view of the host that cannot change under
+    is set to. The value feeds ``target_hostname``, and the portal resolves an
+    application environment from it -- a value matching no registered row is a
+    hard 422 with no fallback, not a cache miss. So this path takes the one view
+    of the host that cannot change under
     a proxy the deployment does not control, and gives up the proxy's more
     accurate answer to get it.
 

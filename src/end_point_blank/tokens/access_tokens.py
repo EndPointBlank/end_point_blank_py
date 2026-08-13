@@ -13,13 +13,25 @@ _MIN_TTL = timedelta(seconds=30)
 
 class AccessTokens:
     """
-    Thread-safe singleton holding this process's access token.
+    Thread-safe singleton holding this process's access tokens, one per
+    application environment.
 
-    Intake issues a token against the application environment the
-    authenticating credential belongs to. The hostname sent with a generation
-    request only resolves the target server-side; it is not what the token is
-    scoped to. A process authenticates as exactly one application environment,
-    so it holds exactly one token, whatever hostnames its callers address it by.
+    A token is cached under the canonical base URL intake resolved the request
+    to — not under the URL the caller supplied. A caller asks for the URL it is
+    about to call; intake answers with the base URL of the environment that URL
+    belongs to, and subsequent calls anywhere under that base URL reuse the
+    entry.
+
+    Lookup is a plain exact-or-path-prefix comparison, with the longest match
+    winning. The SDK deliberately does not normalize: intake owns that rule, and
+    a miss costs one extra request rather than a wrong answer.
+
+    A lookup has to scan the keys, and the fast path deliberately does not take
+    the lock, so every write **replaces** the map instead of mutating it. A
+    reader then takes one atomic read of ``_entries`` and iterates something
+    nobody can change underneath it. Mutating in place would raise
+    ``RuntimeError: dictionary changed size during iteration`` as soon as one
+    thread minted a token for a second target while another was doing a lookup.
 
     Tokens are automatically refreshed when they are within 2 minutes of expiry.
     Equivalent to the Ruby gem's ``EndPointBlank::AccessTokens``.
@@ -33,77 +45,117 @@ class AccessTokens:
             with cls._init_lock:
                 if cls._instance is None:
                     instance = super().__new__(cls)
-                    instance._entry: Optional[dict] = None
+                    instance._entries: dict = {}
                     instance._lock = threading.Lock()
                     cls._instance = instance
         return cls._instance
 
-    def token(self, hostname: str) -> Optional[str]:
+    def token(self, base_url: str) -> Optional[str]:
         """
-        Returns a valid access token, fetching a new one if none is held or the
-        held one is close to expiry.
+        Returns a valid access token for *base_url*, fetching one if no usable
+        entry covers it.
 
-        :param hostname: The hostname to send with a generation request. It
-            tells intake which application environment to resolve and does not
-            select which held token comes back — every caller shares one.
+        :param base_url: The URL you are about to call, with any query string
+            and fragment removed. It is sent verbatim; intake normalizes it and
+            matches it against registered base URLs by longest path prefix.
         :returns: The access token string, or ``None`` if generation failed.
         """
-        entry = self._entry
+        entry = self._match(base_url)
         if self._usable(entry):
             return entry["token"]
 
         with self._lock:
-            # Another caller may have replaced it while this one waited.
-            entry = self._entry
+            # Another caller may have filled it while this one waited.
+            entry = self._match(base_url)
             if self._usable(entry):
                 return entry["token"]
 
             from ..commands.generate_access_token import GenerateAccessToken
-            payload = GenerateAccessToken.token(hostname)
+            payload = GenerateAccessToken.token(base_url)
 
             if payload and payload.get("token"):
-                self._entry = {
-                    "token": payload["token"],
-                    "expired_at": self._parse_expiry(payload.get("expired_at")),
+                # Key on what intake resolved to, falling back to the requested
+                # URL only if the response omits it — an older intake would
+                # otherwise poison every lookup with a None key.
+                key = payload.get("base_url") or base_url
+                self._entries = {
+                    **self._entries,
+                    key: {
+                        "token": payload["token"],
+                        "expired_at": self._parse_expiry(payload.get("expired_at")),
+                    },
                 }
                 return payload["token"]
-            else:
-                # A failed refresh must not leave the expiring token behind
-                # claiming to be usable — callers would keep presenting it
-                # right up to the 401.
-                self._entry = None
-                error = payload.get("error") if payload else "unknown error"
-                logger.error("Failed to generate access token for %s: %s", hostname, error)
-                return None
 
-    def exists(self) -> bool:
-        """Returns ``True`` if a token with at least 30 seconds remaining is held."""
-        entry = self._entry
+            # A failed refresh must not leave an expiring token behind claiming
+            # to be usable — callers would keep presenting it right up to the
+            # 401. Only the entry that covers this URL goes: the longest match
+            # is the one that was just found unusable, so a shorter, still-good
+            # entry survives.
+            stale = self._match_key(base_url, self._entries)
+            if stale is not None:
+                self._entries = {k: v for k, v in self._entries.items() if k != stale}
+            error = payload.get("error") if payload else "unknown error"
+            logger.error("Failed to generate access token for %s: %s", base_url, error)
+            return None
+
+    def exists(self, base_url: str) -> bool:
+        """Returns ``True`` if a token covering *base_url* has 30+ seconds left."""
+        entry = self._match(base_url)
         return bool(entry and entry["expired_at"] > datetime.now(tz=timezone.utc) + _MIN_TTL)
 
     def invalidate(self, stale_token: Optional[str]) -> None:
         """
-        Discards the held token, but only if it is still the one the caller had.
+        Discards a held token, but only if it is still the one the caller had.
 
         Every request in flight when a token is rejected reports the same stale
         value. Only the first of them should cause an exchange — the rest are
         holding a token that has already been replaced, and clearing on their
         behalf would discard a good token and stampede intake.
 
+        The lookup is by token value because a rejected caller has a token, not
+        a URL.
+
         :param stale_token: The token the caller was rejected for; ignored when
-            it is not the one currently held.
+            it is no longer the one held for its base URL.
         """
         if stale_token is None:
             return
 
         with self._lock:
-            if self._entry and self._entry["token"] == stale_token:
-                self._entry = None
+            self._entries = {
+                key: entry
+                for key, entry in self._entries.items()
+                if entry["token"] != stale_token
+            }
 
     def clear(self) -> None:
-        """Discards the held token."""
+        """Discards every held token."""
         with self._lock:
-            self._entry = None
+            self._entries = {}
+
+    @staticmethod
+    def _match_key(base_url: str, entries: dict) -> Optional[str]:
+        """Returns the longest key in *entries* covering *base_url*, or ``None``.
+
+        Deliberately not a port of intake's matcher: no normalization on either
+        side. A caller that passes a non-canonical URL simply misses and mints
+        again, which costs one HTTP call and is never a wrong answer.
+
+        Takes *entries* rather than reading ``self._entries`` so the caller
+        decides which snapshot is being scanned.
+        """
+        best = None
+        for key in entries:
+            if base_url == key or base_url.startswith(key + "/"):
+                if best is None or len(key) > len(best):
+                    best = key
+        return best
+
+    def _match(self, base_url: str) -> Optional[dict]:
+        entries = self._entries  # One atomic read; writes replace, never mutate.
+        key = self._match_key(base_url, entries)
+        return entries.get(key) if key is not None else None
 
     @staticmethod
     def _usable(entry: Optional[dict]) -> bool:

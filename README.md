@@ -164,16 +164,33 @@ epb.configure()  # picks up all ENDPOINTBLANK_* env vars above
 
 ### Authorization
 
-`end_point_blank.authorization.Authorization` builds the `Authorization` header used on every
-outbound call to the EndPointBlank API: a cached `Bearer` token if one exists for the target
-hostname, otherwise HTTP Basic auth from `client_id`/`client_secret`.
+`end_point_blank.authorization.Authorization` builds the `Authorization` header used on
+outbound calls: a `Bearer` token for the target you are about to call, or HTTP Basic auth
+from `client_id`/`client_secret` when no target is given.
 
 ```python
 from end_point_blank.authorization import Authorization
 
-header_value = Authorization.header()               # "Basic <base64(client_id:client_secret)>"
-header_value = Authorization.header(hostname="api.example.com")  # "Bearer <token>" if cached
+# Pass the URL you are about to call, NOT a hostname.
+# Strip any query string or fragment first -- intake rejects both.
+Authorization.header(base_url="https://api.example.com/orders")
 ```
+
+The argument is the URL you are about to call. Intake matches it against the registered base
+URLs by longest path prefix, so you do not need to know how the target registered itself —
+`https://api.example.com/orders/widgets/42` resolves to whichever environment owns it. Query
+strings and fragments must be removed.
+
+Tokens are cached per application environment, keyed on the canonical base URL intake resolves
+the request to (not on the URL you passed), so a service that calls several targets holds a
+token for each. Calls to EndPointBlank itself use the no-argument form:
+
+```python
+Authorization.header()   # "Basic <base64(client_id:client_secret)>"
+```
+
+That is deliberate — EndPointBlank already holds this service's credential, so minting a token
+in order to present it back would buy nothing.
 
 Route/endpoint authorization itself is enforced via the Flask/Django decorators below
 (`authenticated`, `authorized`), which call the `commands.basic_authenticate.BasicAuthenticate` and
@@ -417,7 +434,7 @@ src/end_point_blank/
 │                              # DirectWriter / DelayedWriter transports
 ├── commands/                  # HTTP command objects: authorize, authenticate, endpoint
 │                              # update, access-token generation, version/route-pattern finders
-├── tokens/                    # Access-token cache
+├── tokens/                    # Access-token cache, one entry per application environment
 ├── flask/                     # authenticated/authorized/versioned decorators + endpoint registrar
 └── django/                    # middleware, decorators, versioned, endpoint registrar
 tests/                        # pytest suite mirroring the src/ layout

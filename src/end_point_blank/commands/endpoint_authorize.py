@@ -11,7 +11,6 @@ from ._http import post
 from .authentication_cache import AuthenticationCache
 from ..request_store import RequestStore
 from ..base_url import hostname as resolve_hostname
-from ..tokens.access_tokens import AccessTokens
 
 logger = logging.getLogger(__name__)
 
@@ -81,17 +80,12 @@ class EndpointAuthorize:
             "source_ip": _remote_addr(environ),
         }
 
-        auth = Authorization.header(server_name)
-        response = post(config.authorize_url, auth, body)
-
-        if response is not None and response.status_code == 401 and auth.startswith("Bearer "):
-            # Hand back the token that was rejected rather than clearing
-            # whatever is held now: under load it may already have been replaced
-            # by another request that got here first, and dropping that one
-            # would send the whole wave to exchange again.
-            AccessTokens().invalidate(auth[len("Bearer "):])
-            auth = Authorization.header(server_name)
-            response = post(config.authorize_url, auth, body)
+        # Basic, not Bearer. This call is to intake, which already holds this
+        # service's credential -- minting a token to present it back was a hop
+        # that bought nothing. With no Bearer there is no stale token, so the
+        # 401 retry that used to live here is gone: a 401 now means the
+        # credential is wrong, which is worth surfacing rather than retrying.
+        response = post(config.authorize_url, Authorization.header(), body)
 
         if response is None:
             return None
