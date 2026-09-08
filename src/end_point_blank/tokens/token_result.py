@@ -25,17 +25,32 @@ class TokenOutcome(Enum):
     "worked" and "did not work": the remedy differs, and so does whether
     retrying is worth anything at all.
 
-    - :attr:`SUCCESS` -- 2xx. The payload is the mint.
+    - :attr:`SUCCESS` -- 2xx carrying a usable mint: a ``token``, and the
+      ``base_url`` to key it under.
     - :attr:`CREDENTIAL_REJECTED` -- 401. Permanent until the credential is
       re-issued. No amount of retrying changes the answer.
     - :attr:`REQUEST_REJECTED` -- any other 4xx. Also permanent, but the
       credential is fine: the environment is not registered, or the request was
       malformed. Deliberately not folded in with :attr:`SERVER_ERROR`, whose
       name would tell a caller to retry into a wall.
-    - :attr:`SERVER_ERROR` -- 5xx. Transient; retrying is reasonable.
-    - :attr:`TRANSPORT_ERROR` -- no usable response at all: the network failed,
-      the request timed out, ``post`` exhausted its retries, or a 2xx body could
-      not be parsed. Transient.
+    - :attr:`SERVER_ERROR` -- 5xx, and any 2xx that did not produce a usable
+      mint: an unparseable body, no ``token``, or a token with no ``base_url``.
+      intake's ``base_url`` is NOT NULL and it answers 422 rather than minting
+      when the URL resolves to nothing, so a 2xx missing one is a broken server,
+      not a rejected request. The :attr:`status` stays the real 2xx.
+    - :attr:`TRANSPORT_ERROR` -- no usable HTTP status was obtained at all: the
+      network failed, the request timed out, or ``post`` exhausted its retries.
+      Transient.
+
+    Outcomes are decided by the status first and the body second. A response
+    that arrived is never :attr:`TRANSPORT_ERROR`, however unreadable it is --
+    otherwise a 401 answered by a proxy with an HTML error page would read as
+    transient and be retried forever.
+
+    There is deliberately no "should I retry?" boolean. Two of these five are
+    worth retrying and three are not, but which three is a caller's decision and
+    the remedies differ; a predicate would collapse five honest names back into
+    two, which is a smaller copy of the bug this exists to remove.
     """
 
     SUCCESS = "success"
@@ -44,8 +59,6 @@ class TokenOutcome(Enum):
     SERVER_ERROR = "server_error"
     TRANSPORT_ERROR = "transport_error"
 
-
-_RETRYABLE = frozenset({TokenOutcome.SERVER_ERROR, TokenOutcome.TRANSPORT_ERROR})
 
 
 @dataclass(frozen=True)
@@ -71,19 +84,3 @@ class TokenResult:
     outcome: TokenOutcome
     status: Optional[int] = None
     payload: Optional[Dict[str, Any]] = None
-
-    @property
-    def succeeded(self) -> bool:
-        """Whether intake answered 2xx. Not whether a usable token came back --
-        a 2xx missing ``token`` or ``base_url`` still succeeded by this measure
-        and still mints nothing."""
-        return self.outcome is TokenOutcome.SUCCESS
-
-    @property
-    def retryable(self) -> bool:
-        """Whether trying again could plausibly produce a different answer.
-
-        ``False`` for every 4xx, including 401: those need something outside
-        this process to change first.
-        """
-        return self.outcome in _RETRYABLE

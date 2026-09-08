@@ -107,18 +107,20 @@ class AccessTokens:
             result = GenerateAccessToken.token_result(base_url)
             payload = result.payload
 
-            # The key is what intake resolved to, and only that. There is no
-            # fallback to the requested URL: that would key on the resource the
-            # caller happened to ask about, so a service walking /orders/1,
-            # /orders/2, /orders/3 would mint and store a token per resource,
-            # and nothing here evicts. Without a base URL the right application
-            # cannot be found, so no token is handed back either.
-            key = payload.get("base_url") if payload else None
-
-            # ``result.succeeded`` gates the cache as well as the token/key
-            # check: a non-2xx body shaped like a token response is not a token,
-            # and storing one would present a credential intake just refused.
-            if result.succeeded and payload and payload.get("token") and key:
+            if result.outcome is TokenOutcome.SUCCESS:
+                # SUCCESS is only ever a 2xx carrying both a token and the
+                # canonical base URL intake resolved to; GenerateAccessToken
+                # downgrades anything else to SERVER_ERROR. So both are safe to
+                # read here, and a non-2xx body that merely looks like a token
+                # response cannot reach this branch -- storing one would present
+                # a credential intake had just refused.
+                #
+                # The key is what intake resolved to, and only that. There is no
+                # fallback to the requested URL: that would key on the resource
+                # the caller happened to ask about, so a service walking
+                # /orders/1, /orders/2, /orders/3 would mint and store a token
+                # per resource, and nothing here evicts.
+                key = payload["base_url"]
                 entries = self._entries
                 if matched_key is not None and matched_key != key:
                     entries = {k: v for k, v in entries.items() if k != matched_key}
@@ -305,18 +307,27 @@ class AccessTokens:
 
         payload = result.payload
         detail = payload.get("error") if payload else None
-        if not result.succeeded:
-            # The status is the actionable part, so it leads even when intake
-            # also sent a message.
-            return f"HTTP {result.status}{': ' + str(detail) if detail else ''}"
-        if detail:
-            return str(detail)
-        if payload and payload.get("token"):
-            # Distinct from a rejected request: intake's base_url is NOT NULL,
-            # and it answers 422 rather than minting when the caller's URL
-            # resolves to no environment. A 2xx without one is a broken server.
-            return "response carried a token but no base_url"
-        return "no token in response"
+        status = result.status
+
+        if status is not None and 200 <= status < 300:
+            # A 2xx that produced no usable mint. The status says nothing here
+            # -- intake claimed it worked -- so the shape of what came back is
+            # the whole value of the line.
+            if payload is None:
+                # The parse error itself was logged by GenerateAccessToken.
+                return f"HTTP {status} with an unreadable body"
+            if detail:
+                return str(detail)
+            if payload.get("token"):
+                # Distinct from a rejected request: intake's base_url is NOT
+                # NULL, and it answers 422 rather than minting when the caller's
+                # URL resolves to no environment.
+                return "response carried a token but no base_url"
+            return "no token in response"
+
+        # The status is the actionable part, so it leads even when intake also
+        # sent a message.
+        return f"HTTP {status}{': ' + str(detail) if detail else ''}"
 
     @staticmethod
     def _usable(entry: Optional[dict]) -> bool:

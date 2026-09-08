@@ -38,9 +38,16 @@ def payload(token="tok-1", expires_in_seconds=3600, **overrides):
 
 
 def minted_body(body):
-    """A 2xx result carrying *body* verbatim -- including the broken-server
-    shapes a 201 should never have."""
+    """A 2xx that minted something usable, carrying *body* verbatim."""
     return TokenResult(TokenOutcome.SUCCESS, 201, body)
+
+
+def broken_2xx(body=None, status=201):
+    """intake claiming success and delivering nothing usable -- an unreadable
+    body, no token, or a token with no ``base_url`` to key it under.
+    ``GenerateAccessToken`` classifies all three as a server error carrying the
+    real 2xx status."""
+    return TokenResult(TokenOutcome.SERVER_ERROR, status, body)
 
 
 def minted(token="tok-1", expires_in_seconds=3600, **overrides):
@@ -217,7 +224,7 @@ class TestWhenGenerationFails:
             assert AccessTokens().token(BASE) is None
 
     def test_returns_none_when_the_token_field_is_blank(self):
-        with patch(GENERATOR, return_value=minted_body({"token": ""})):
+        with patch(GENERATOR, return_value=broken_2xx({"token": ""})):
             assert AccessTokens().token(BASE) is None
 
     def test_a_response_without_a_base_url_is_a_failed_mint(self, caplog):
@@ -225,7 +232,7 @@ class TestWhenGenerationFails:
         # token under, so no token is handed back either. Keying on the caller's
         # URL instead would store an entry per resource URL, and nothing here
         # evicts -- a bounded extra request traded for an unbounded leak.
-        with patch(GENERATOR, return_value=minted_body({"token": "tok-1"})) as generate:
+        with patch(GENERATOR, return_value=broken_2xx({"token": "tok-1"})) as generate:
             assert AccessTokens().token("https://example.com/orders/1") is None
             assert AccessTokens().token("https://example.com/orders/2") is None
 
@@ -602,7 +609,6 @@ class TestBranchingOnWhyAMintFailed:
         failure = AccessTokens().last_failure(BASE)
         assert failure.outcome is TokenOutcome.CREDENTIAL_REJECTED
         assert failure.status == 401
-        assert failure.retryable is False
 
     def test_a_rejected_credential_is_logged_loudly_and_distinctly(self, caplog):
         # Not the generic "Failed to generate access token" line: this one names
@@ -625,7 +631,6 @@ class TestBranchingOnWhyAMintFailed:
         failure = AccessTokens().last_failure(BASE)
         assert failure.outcome is TokenOutcome.REQUEST_REJECTED
         assert failure.status == 422
-        assert failure.retryable is False
         assert "re-issue" not in caplog.text
 
     def test_a_server_failure_is_recorded_as_retryable(self, caplog):
@@ -635,7 +640,6 @@ class TestBranchingOnWhyAMintFailed:
         failure = AccessTokens().last_failure(BASE)
         assert failure.outcome is TokenOutcome.SERVER_ERROR
         assert failure.status == 503
-        assert failure.retryable is True
         assert "Failed to generate access token" in caplog.text
         assert "re-issue" not in caplog.text
 
@@ -646,7 +650,6 @@ class TestBranchingOnWhyAMintFailed:
         failure = AccessTokens().last_failure(BASE)
         assert failure.outcome is TokenOutcome.TRANSPORT_ERROR
         assert failure.status is None
-        assert failure.retryable is True
 
     def test_the_log_leads_with_the_status_of_a_non_2xx(self, caplog):
         # A caller reading logs, rather than ``last_failure``, still has to be
@@ -656,10 +659,19 @@ class TestBranchingOnWhyAMintFailed:
 
         assert "HTTP 503: upstream down" in caplog.text
 
+    def test_a_success_status_with_an_unreadable_body_says_so(self, caplog):
+        # It arrives as a SERVER_ERROR carrying a 2xx status. "HTTP 201" alone
+        # would read as a contradiction in the log.
+        with patch(GENERATOR, return_value=broken_2xx()):
+            assert AccessTokens().token(BASE) is None
+
+        assert "HTTP 201 with an unreadable body" in caplog.text
+        assert AccessTokens().last_failure(BASE).outcome is TokenOutcome.SERVER_ERROR
+
     def test_a_2xx_carrying_only_a_message_logs_that_message(self, caplog):
         # No status to lead with -- intake said it worked -- so whatever it did
         # say is the most useful thing in the line.
-        with patch(GENERATOR, return_value=minted_body({"error": "nothing to mint"})):
+        with patch(GENERATOR, return_value=broken_2xx({"error": "nothing to mint"})):
             assert AccessTokens().token(BASE) is None
 
         assert "nothing to mint" in caplog.text
@@ -668,10 +680,13 @@ class TestBranchingOnWhyAMintFailed:
         # The broken-server case: a success status with nothing to cache under.
         # It has to be recorded too, or a caller polling ``last_failure`` after
         # a None sees nothing and concludes the mint worked.
-        with patch(GENERATOR, return_value=minted_body({"token": "tok-1"})):
+        with patch(GENERATOR, return_value=broken_2xx({"token": "tok-1"})):
             assert AccessTokens().token(BASE) is None
 
-        assert AccessTokens().last_failure(BASE).outcome is TokenOutcome.SUCCESS
+        failure = AccessTokens().last_failure(BASE)
+        assert failure.outcome is TokenOutcome.SERVER_ERROR
+        # The real 2xx rides along, so a reader can tell this apart from a 500.
+        assert failure.status == 201
 
     def test_a_non_2xx_body_that_happens_to_carry_a_token_is_not_cached(self):
         # Only a success mints. A 401 body shaped like a token response is not a
@@ -768,7 +783,7 @@ class TestTheLegacyContract:
             assert AccessTokens().token(BASE) == "tok-abc"
 
     def test_token_still_answers_none_on_every_kind_of_failure(self):
-        for result in (rejected(), request_rejected(400), server_error(500), TRANSPORT_FAILURE):
+        for result in (rejected(), request_rejected(400), server_error(500), broken_2xx(), TRANSPORT_FAILURE):
             AccessTokens().clear()
             with patch(GENERATOR, return_value=result):
                 assert AccessTokens().token(BASE) is None

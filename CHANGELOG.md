@@ -10,15 +10,18 @@
 
   | outcome | status | meaning |
   | --- | --- | --- |
-  | `SUCCESS` | 2xx | the payload is the mint |
+  | `SUCCESS` | 2xx | the payload is a usable mint — a `token` and the `base_url` to key it under |
   | `CREDENTIAL_REJECTED` | 401 | permanent; the credential must be re-issued |
   | `REQUEST_REJECTED` | any other 4xx | permanent; the environment is not registered, or the request was malformed |
-  | `SERVER_ERROR` | 5xx | transient; retrying is reasonable |
-  | `TRANSPORT_ERROR` | — | no usable response: network failure, timeout, retries exhausted, or an unparseable 2xx body |
+  | `SERVER_ERROR` | 5xx, or the real 2xx | transient; a 5xx, or a 2xx that minted nothing usable (unparseable body, no `token`, or a token with no `base_url`) |
+  | `TRANSPORT_ERROR` | — | no usable HTTP status was obtained at all: network failure, timeout, retries exhausted |
 
-  `TokenResult.retryable` answers the question most callers actually have; it
-  is `False` for every 4xx, 401 included. `TokenOutcome` and `TokenResult` are
-  exported from the package root.
+  Outcomes are decided by the **status first, body second**: a 401 whose body
+  is not JSON — a proxy or WAF answering with an HTML error page — is still
+  `CREDENTIAL_REJECTED`, never `TRANSPORT_ERROR`. There is deliberately no
+  "should I retry?" boolean; callers branch on the outcome names, because the
+  remedies differ and a boolean would collapse five honest names into two.
+  `TokenOutcome` and `TokenResult` are exported from the package root.
 
 - **`AccessTokens().last_failure(base_url)`** returns the most recent failure
   covering that URL, or `None`. It is cleared by a successful mint and by
@@ -28,8 +31,8 @@
   ```python
   if tokens.token(url) is None:
       failure = tokens.last_failure(url)
-      if failure and not failure.retryable:
-          ...  # backing off achieves nothing
+      if failure and failure.outcome is epb.TokenOutcome.CREDENTIAL_REJECTED:
+          ...  # backing off achieves nothing; the credential is dead
   ```
 
 ### Changed
@@ -39,7 +42,8 @@
   intake outage.
 - A non-2xx response whose body happens to look like a token response is no
   longer cached. It was never reachable against a working intake, but the
-  cache is now gated on the status rather than on the shape of the body.
+  cache is now gated on the classified outcome rather than on the shape of the
+  body.
 - The generic failure log leads with the HTTP status (`HTTP 422: Missing
   target application`) rather than the message alone.
 

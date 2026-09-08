@@ -187,25 +187,28 @@ class TestTheStatusCarryingResult:
         assert result.status is None
         assert result.payload is None
 
-    def test_an_unparseable_success_body_is_a_transport_error(self):
-        # A 201 is only useful for the token in it. Without a readable body
-        # there is no token, and nothing distinguishes this from the response
-        # never arriving.
+    def test_an_unparseable_success_body_is_a_server_error(self):
+        # The one case where the body decides the outcome: a 201 is only useful
+        # for the token in it, so a success the SDK cannot read is a broken
+        # server. Still not a transport error -- a status did arrive.
         resp = response(201)
         resp.json.side_effect = ValueError("not json")
 
         with patch.object(gat, "post", return_value=resp):
             result = GenerateAccessToken.token_result(BASE)
 
-        assert result.outcome is TokenOutcome.TRANSPORT_ERROR
+        assert result.outcome is TokenOutcome.SERVER_ERROR
+        assert result.status == 201
+        assert result.payload is None
 
-    def test_an_unparseable_error_body_keeps_the_verdict_the_status_gave(self):
-        # The status is the actionable part of a 401; the body is decoration. A
-        # proxy that answers 401 with HTML is still a rejected credential, and
-        # demoting it to a transport error would restart the retry loop this
-        # story exists to stop.
+    def test_a_401_from_a_proxy_that_answers_html_is_still_a_rejected_credential(self):
+        # The reason classification reads the status before the body. In prod
+        # the SDK reaches intake through Caddy, and any proxy, WAF or auth
+        # gateway in front of the app can answer 401 with an HTML page intake
+        # never generated. Parsing first would call that transient and the
+        # caller would retry a dead credential forever.
         resp = response(401)
-        resp.json.side_effect = ValueError("<html>")
+        resp.json.side_effect = ValueError("Expecting value: line 1 column 1")
 
         with patch.object(gat, "post", return_value=resp):
             result = GenerateAccessToken.token_result(BASE)
@@ -214,29 +217,57 @@ class TestTheStatusCarryingResult:
         assert result.status == 401
         assert result.payload is None
 
-    def test_a_success_is_the_only_outcome_that_succeeded(self):
-        results = {
-            TokenOutcome.SUCCESS: True,
-            TokenOutcome.CREDENTIAL_REJECTED: False,
-            TokenOutcome.REQUEST_REJECTED: False,
-            TokenOutcome.SERVER_ERROR: False,
-            TokenOutcome.TRANSPORT_ERROR: False,
-        }
+    @pytest.mark.parametrize(
+        "status,expected",
+        [
+            (400, TokenOutcome.REQUEST_REJECTED),
+            (422, TokenOutcome.REQUEST_REJECTED),
+            (503, TokenOutcome.SERVER_ERROR),
+        ],
+        ids=["bad-request", "unprocessable", "unavailable"],
+    )
+    def test_no_arrived_response_is_ever_a_transport_error(self, status, expected):
+        # The invariant: TRANSPORT_ERROR means no usable HTTP status was
+        # obtained. An unreadable body never demotes a status that arrived.
+        resp = response(status)
+        resp.json.side_effect = ValueError("<html>")
 
-        assert {o: TokenResult(o).succeeded for o in TokenOutcome} == results
+        with patch.object(gat, "post", return_value=resp):
+            result = GenerateAccessToken.token_result(BASE)
 
-    def test_only_a_server_or_transport_failure_is_retryable(self):
-        # A caller's whole reason for asking. 401/400/422 are permanent until
-        # something outside this process changes.
-        results = {
-            TokenOutcome.SUCCESS: False,
-            TokenOutcome.CREDENTIAL_REJECTED: False,
-            TokenOutcome.REQUEST_REJECTED: False,
-            TokenOutcome.SERVER_ERROR: True,
-            TokenOutcome.TRANSPORT_ERROR: True,
-        }
+        assert result.outcome is expected
 
-        assert {o: TokenResult(o).retryable for o in TokenOutcome} == results
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"token": "tok-abc"},
+            {"base_url": BASE},
+            {"token": "", "base_url": BASE},
+            {"token": "tok-abc", "base_url": ""},
+        ],
+        ids=["empty", "no-base-url", "no-token", "blank-token", "blank-base-url"],
+    )
+    def test_a_2xx_that_minted_nothing_usable_is_a_server_error(self, body):
+        # SUCCESS has to mean a token AND somewhere to key it, or a caller
+        # branching on the name alone caches nothing and never learns why.
+        # SERVER_ERROR rather than a rejection: intake's base_url is NOT NULL
+        # and it answers 422 rather than minting when the URL resolves to
+        # nothing, so a 2xx without one broke its own contract.
+        with patch.object(gat, "post", return_value=response(201, payload=body)):
+            result = GenerateAccessToken.token_result(BASE)
+
+        assert result.outcome is TokenOutcome.SERVER_ERROR
+        # The real 2xx, not a fabricated 5xx: that is what actually happened.
+        assert result.status == 201
+        assert result.payload == body
+
+    def test_the_result_carries_no_retry_predicate(self):
+        # Settled across all five SDKs: callers branch on the outcome names.
+        # Two of the five are worth retrying and three are not, but the remedies
+        # differ, and a boolean would collapse five honest names back into two.
+        assert not hasattr(TokenResult(TokenOutcome.SERVER_ERROR), "retryable")
+        assert not hasattr(TokenResult(TokenOutcome.SERVER_ERROR), "succeeded")
 
     def test_the_result_is_frozen(self):
         # Handed out by ``AccessTokens.last_failure`` and read from other
