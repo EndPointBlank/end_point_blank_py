@@ -107,17 +107,25 @@ class GenerateAccessToken:
         """
         Requests a new access token for *base_url*.
 
-        Kept for callers written against it, and unchanged: it answers the
-        parsed body for *any* status intake returned -- so a rejected credential
-        and a broken server are the same value here. Use :meth:`token_result` to
-        tell them apart.
+        The payload-or-``None`` accessor, where payload means a token was
+        actually minted. Every other outcome answers ``None``: a 401 or 422
+        whose body explains the refusal, and a 2xx that parsed into something
+        with no usable token in it.
+
+        Returning those bodies would hand a caller a truthy value for a request
+        that produced no token -- the failure :meth:`token_result` exists to
+        remove, one layer down. Nothing is lost: ``token_result(base_url).payload``
+        is exactly what this used to return, now alongside the outcome that
+        explains it.
 
         :param base_url: Sent verbatim. intake normalizes it and matches it
             against registered base URLs by longest path prefix.
         :returns: A dict with ``token``, ``expired_at`` and ``base_url``, or
-            ``None`` on failure.
+            ``None`` when no token was minted.
         """
-        return GenerateAccessToken.token_result(base_url).payload
+        result = GenerateAccessToken.token_result(base_url)
+
+        return result.payload if result.outcome is TokenOutcome.SUCCESS else None
 
     @staticmethod
     def _is_usable(payload: Optional[Dict[str, Any]]) -> bool:

@@ -62,10 +62,28 @@
   to reach `payload.get(...)` and throw `AttributeError` into the calling
   application's request.
 
-`GenerateAccessToken.token()`, `AccessTokens().token()` and
-`AccessTokens().exists()` are unchanged — same arguments, same return values,
-including `token()` still handing back the parsed body of a non-2xx response.
-All of the above is additive.
+### Changed
+
+**`GenerateAccessToken.token()` now answers `None` unless a token was actually
+minted.** It previously returned the parsed body of any response that parsed —
+an `{"error": ...}` document from a 401 or 422, or a 2xx that parsed into
+something with no usable token in it. Each of those handed the caller a truthy
+value for a request that produced no token, which is the failure
+`token_result()` was added to remove, one layer down.
+
+This aligns all five SDKs with Elixir, whose equivalent has always answered nil
+for anything that was not a mint.
+
+**Upgrade note:** nothing in this package calls `token()` — `AccessTokens`
+reads `token_result(base_url).payload` — so no log line or diagnostic changes.
+A caller that read an error out of the return value should call
+`token_result()` instead: `.payload` is exactly what `token()` used to hand
+back, now alongside the outcome that explains it. A caller that only ever read
+`["token"]` needs no change, because a body without a usable token was never
+something it could act on.
+
+`AccessTokens().token()` and `AccessTokens().exists()` are unchanged — same
+arguments, same return values.
 
 ## 0.6.0
 
