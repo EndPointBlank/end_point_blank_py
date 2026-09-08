@@ -761,17 +761,28 @@ class TestLastFailure:
         assert AccessTokens().last_failure(None) is None
 
     def test_does_not_grow_without_bound(self):
-        # A caller looping over distinct resource URLs that all fail would
-        # otherwise leak one record per URL -- the same unbounded-map trap the
-        # token cache is keyed to avoid. Past the cap the map restarts.
-        with patch(GENERATOR, return_value=server_error(500)):
-            for i in range(AccessTokens._FAILURE_CAP * 3):
+        # The leak this bound exists for: a revoked credential fails every mint
+        # indefinitely, and the only thing that clears a record is a successful
+        # mint that is never coming. A service walking /orders/1, /orders/2, ...
+        # would record one per URL forever -- the same unbounded-map trap the
+        # token cache is keyed to avoid.
+        cap = AccessTokens._FAILURE_CAP
+        with patch(GENERATOR, return_value=rejected()):
+            for i in range(cap * 3):
                 AccessTokens().token(f"https://t{i}.example.com/orders")
 
-        assert len(AccessTokens()._failures) <= AccessTokens._FAILURE_CAP
-        # The newest one is always the one kept.
-        last = AccessTokens._FAILURE_CAP * 3 - 1
-        assert AccessTokens().last_failure(f"https://t{last}.example.com/orders") is not None
+        assert len(AccessTokens()._failures) == cap
+
+    def test_evicts_the_oldest_record_rather_than_the_newest(self):
+        # The cap is enforced on insert, and what goes is the oldest: a caller
+        # asking why its most recent call failed must still get an answer.
+        cap = AccessTokens._FAILURE_CAP
+        with patch(GENERATOR, return_value=rejected()):
+            for i in range(cap + 1):
+                AccessTokens().token(f"https://t{i}.example.com/orders")
+
+        assert AccessTokens().last_failure("https://t0.example.com/orders") is None
+        assert AccessTokens().last_failure(f"https://t{cap}.example.com/orders") is not None
 
 
 class TestTheLegacyContract:

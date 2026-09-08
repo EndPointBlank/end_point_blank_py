@@ -51,13 +51,19 @@ class AccessTokens:
     _instance: Optional["AccessTokens"] = None
     _init_lock = threading.Lock()
 
-    # Failures are keyed on the URL the caller asked about, which -- unlike a
-    # minted entry's canonical key -- a caller can invent without limit: a
-    # service walking /orders/1, /orders/2, ... against a dead intake would
-    # record one per resource. So the map is capped, and past the cap it is
-    # dropped and restarted rather than grown. It is a diagnostic, not a cache;
-    # losing older entries costs nothing, and an unbounded map would be the
-    # exact leak ``_entries`` is keyed to avoid.
+    # DO NOT REMOVE THIS BOUND. Failures are keyed on the URL the caller asked
+    # about, which -- unlike a minted entry's canonical key -- a caller can
+    # invent without limit. The failure mode is the one this whole mechanism
+    # exists for: with a revoked credential every mint fails indefinitely, so a
+    # service walking /orders/1, /orders/2, /orders/3 ... records a new entry
+    # per URL forever, and the only thing that clears a record is a successful
+    # mint that is never coming. In a long-lived process, inside an SDK
+    # embedded in a customer's application, that is an unbounded leak -- the
+    # exact trap ``_entries`` avoids by keying on what intake resolved to.
+    #
+    # So the cap is enforced on insert, not on some later success, and the
+    # oldest record goes to make room. This is a diagnostic, not a cache;
+    # losing the oldest costs nothing.
     _FAILURE_CAP = 64
 
     def __new__(cls) -> "AccessTokens":
@@ -194,6 +200,10 @@ class AccessTokens:
         URL a caller is about to retry finds the failure recorded for the URL it
         tried before.
 
+        Scoped per target, not per process: a 401 for one base URL says nothing
+        about another, since a process can hold tokens for several environments.
+        Only the most recent ``_FAILURE_CAP`` targets are kept -- see the cap.
+
         :param base_url: The URL you asked for a token for.
         :returns: The recorded
             :class:`~end_point_blank.tokens.token_result.TokenResult`, or
@@ -236,16 +246,25 @@ class AccessTokens:
             self._failures = {}
 
     def _record_failure(self, base_url: str, result: TokenResult) -> None:
-        """Remembers why a mint produced no token. Caller holds ``_lock``.
+        """Remembers why a mint produced no token, oldest out past the cap.
+        Caller holds ``_lock``.
 
-        Replaces the map rather than mutating it, exactly as the token cache
-        does: :meth:`last_failure` reads it on the fast path without the lock,
-        and mutating in place would raise "dictionary changed size during
+        Replaces the published map rather than mutating it, exactly as the token
+        cache does: :meth:`last_failure` reads it on the fast path without the
+        lock, and mutating in place would raise "dictionary changed size during
         iteration" in the matcher the moment a second target failed while
-        another thread was querying.
+        another thread was querying. The trimming below is safe for the same
+        reason it is trimming -- ``failures`` is a fresh local dict that nobody
+        else can see until the assignment publishes it, which is one atomic
+        rebind of the attribute.
         """
-        failures = self._failures if len(self._failures) < self._FAILURE_CAP else {}
-        self._failures = {**failures, base_url: result}
+        failures = {**self._failures, base_url: result}
+        while len(failures) > self._FAILURE_CAP:
+            # Insertion order, so this is the oldest first-seen URL. A URL that
+            # fails again keeps its original position, which is fine: the bound
+            # is here to stop the map growing, not to model recency exactly.
+            del failures[next(iter(failures))]
+        self._failures = failures
 
     def _forget_failures(self, base_url: str, key: str) -> None:
         """Drops the records a successful mint has just answered. Caller holds
