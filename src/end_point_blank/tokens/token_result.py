@@ -25,8 +25,12 @@ class TokenOutcome(Enum):
     "worked" and "did not work": the remedy differs, and so does whether
     retrying is worth anything at all.
 
-    - :attr:`SUCCESS` -- 2xx carrying a usable mint: a ``token``, and the
-      ``base_url`` to key it under.
+    - :attr:`SUCCESS` -- 2xx carrying a usable mint: a non-empty ``token``, and
+      the non-empty ``base_url`` to key it under. Nothing else is a success, so
+      code that branches on this name can read both fields straight off the
+      payload. An ``is_success`` that could be true with the token absent would
+      leave every caller a second check to remember, which is the check that
+      gets forgotten.
     - :attr:`CREDENTIAL_REJECTED` -- 401. Permanent until the credential is
       re-issued. No amount of retrying changes the answer.
     - :attr:`REQUEST_REJECTED` -- any other 4xx. Also permanent, but the
@@ -34,10 +38,11 @@ class TokenOutcome(Enum):
       malformed. Deliberately not folded in with :attr:`SERVER_ERROR`, whose
       name would tell a caller to retry into a wall.
     - :attr:`SERVER_ERROR` -- 5xx, and any 2xx that did not produce a usable
-      mint: an unparseable body, no ``token``, or a token with no ``base_url``.
-      intake's ``base_url`` is NOT NULL and it answers 422 rather than minting
-      when the URL resolves to nothing, so a 2xx missing one is a broken server,
-      not a rejected request. The :attr:`status` stays the real 2xx.
+      mint: a body that would not parse, a body that is not a JSON object, no
+      ``token``, or a token with no ``base_url``. intake's ``base_url`` is NOT
+      NULL and it answers 4xx rather than minting when the URL resolves to
+      nothing, so a 2xx missing one is a broken server, not a rejected request.
+      The :attr:`status` stays the real 2xx, never a synthesized 5xx.
     - :attr:`TRANSPORT_ERROR` -- no usable HTTP status was obtained at all: the
       network failed, the request timed out, or ``post`` exhausted its retries.
       Transient.
@@ -79,6 +84,12 @@ class TokenResult:
     :param payload: The parsed response body, or ``None`` when there was none or
         it could not be parsed. On a :attr:`TokenOutcome.SUCCESS` this carries
         ``token``, ``expired_at`` and ``base_url``.
+
+        Kept verbatim on a failure too, including the 2xx bodies classified
+        :attr:`TokenOutcome.SERVER_ERROR` for carrying no usable token. That is
+        what the failure log reads to say *how* the body was useless, and what
+        keeps ``GenerateAccessToken.token`` handing back exactly the body it
+        always did.
     """
 
     outcome: TokenOutcome

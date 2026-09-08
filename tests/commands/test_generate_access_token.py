@@ -113,14 +113,19 @@ class TestTheResult:
         with patch.object(gat, "post", return_value=resp):
             assert GenerateAccessToken.token(BASE) is None
 
-    def test_returns_the_error_body_of_a_rejected_request(self):
-        # The caller (``AccessTokens``) distinguishes "no token" from "no
-        # response" and logs the reason, so a 4xx body has to come back rather
-        # than being flattened to None.
+    def test_answers_none_for_a_rejected_request_without_losing_the_reason(self):
+        # The comment this replaces claimed ``AccessTokens`` needed the 4xx body
+        # back from here. It does not: it calls ``token_result`` and reads
+        # ``result.payload`` directly, and nothing in ``src`` calls ``token`` at
+        # all. So None costs no diagnostic -- the reason is still logged, and
+        # still reachable.
         body = {"error": "invalid client"}
 
         with patch.object(gat, "post", return_value=response(401, payload=body)):
-            assert GenerateAccessToken.token(BASE) == body
+            assert GenerateAccessToken.token(BASE) is None
+
+        with patch.object(gat, "post", return_value=response(401, payload=body)):
+            assert GenerateAccessToken.token_result(BASE).payload == body
 
 
 class TestTheStatusCarryingResult:
@@ -245,22 +250,72 @@ class TestTheStatusCarryingResult:
             {"base_url": BASE},
             {"token": "", "base_url": BASE},
             {"token": "tok-abc", "base_url": ""},
+            {"error": "Missing target application"},
+            {"token": 12345, "base_url": BASE},
+            {"token": "tok-abc", "base_url": ["https://api.example.com/orders"]},
         ],
-        ids=["empty", "no-base-url", "no-token", "blank-token", "blank-base-url"],
+        ids=[
+            "empty",
+            "no-base-url",
+            "no-token",
+            "blank-token",
+            "blank-base-url",
+            "an-error-where-the-token-should-be",
+            "non-string-token",
+            "non-string-base-url",
+        ],
     )
     def test_a_2xx_that_minted_nothing_usable_is_a_server_error(self, body):
         # SUCCESS has to mean a token AND somewhere to key it, or a caller
         # branching on the name alone caches nothing and never learns why.
         # SERVER_ERROR rather than a rejection: intake's base_url is NOT NULL
-        # and it answers 422 rather than minting when the URL resolves to
+        # and it answers 4xx rather than minting when the URL resolves to
         # nothing, so a 2xx without one broke its own contract.
+        #
+        # Both fields have to be non-empty *strings*. A truthiness test would
+        # pass a number or a list straight through to an ``Authorization``
+        # header and to a cache key, where the same broken server costs a
+        # confusing failure much further from the response that caused it.
         with patch.object(gat, "post", return_value=response(201, payload=body)):
             result = GenerateAccessToken.token_result(BASE)
 
         assert result.outcome is TokenOutcome.SERVER_ERROR
         # The real 2xx, not a fabricated 5xx: that is what actually happened.
         assert result.status == 201
+        # Invariant: the body survives classification. It is what the failure
+        # log reads to say *how* the response was useless, and what keeps
+        # ``token`` answering exactly what it always did.
         assert result.payload == body
+
+    @pytest.mark.parametrize(
+        "body",
+        [["token", "tok-abc"], "tok-abc", 7],
+        ids=["array", "bare-string", "number"],
+    )
+    def test_a_2xx_whose_body_is_not_a_json_object_is_a_server_error(self, body):
+        # Valid JSON that is not a document. The SDK runs on the request path of
+        # the application it is embedded in, so this must classify rather than
+        # raise ``AttributeError`` out of a customer's request because something
+        # in front of intake answered 200 with an array.
+        with patch.object(gat, "post", return_value=response(201, payload=body)):
+            result = GenerateAccessToken.token_result(BASE)
+
+        assert result.outcome is TokenOutcome.SERVER_ERROR
+        assert result.status == 201
+        assert result.payload == body
+
+    def test_a_2xx_with_a_usable_mint_is_the_only_success(self):
+        # The other side of the table above, stated once: SUCCESS is exactly a
+        # 2xx whose body parsed and carries both non-empty strings, so a caller
+        # that branches on it can read them without checking again.
+        body = {"token": "tok-abc", "base_url": BASE, "expired_at": "2099-01-01T00:00:00Z"}
+
+        with patch.object(gat, "post", return_value=response(200, payload=body)):
+            result = GenerateAccessToken.token_result(BASE)
+
+        assert result.outcome is TokenOutcome.SUCCESS
+        assert result.payload["token"] == "tok-abc"
+        assert result.payload["base_url"] == BASE
 
     def test_the_result_carries_no_retry_predicate(self):
         # Settled across all five SDKs: callers branch on the outcome names.
@@ -279,19 +334,44 @@ class TestTheStatusCarryingResult:
 
 
 class TestTheLegacyContract:
-    """``token`` is published API. It keeps returning parsed-body-or-None, for
-    exactly the statuses it did before, so an existing caller sees no change."""
+    """``token`` is the payload-or-None accessor, and payload means a token was
+    actually minted. Anything else answers None, matching all five SDKs."""
 
     @pytest.mark.parametrize("status", [201, 400, 401, 422, 500], ids=["created", "bad-request", "unauthorized", "unprocessable", "error"])
-    def test_returns_the_parsed_body_whatever_the_status(self, status):
+    def test_answers_none_for_a_body_that_minted_nothing(self, status):
+        # Handing an ``{"error": ...}`` document back would give the caller a
+        # truthy value for a request that produced no token -- the failure
+        # ``token_result`` exists to remove, one layer down. The 201 in this
+        # table is the interesting one: an encouraging status is not a mint.
         body = {"error": "whatever"}
 
         with patch.object(gat, "post", return_value=response(status, payload=body)):
-            assert GenerateAccessToken.token(BASE) == body
+            assert GenerateAccessToken.token(BASE) is None
 
-    def test_returns_exactly_the_payload_of_the_result(self):
-        with patch.object(gat, "post", return_value=response(201, payload={"token": "t"})):
+    def test_the_body_is_still_reachable_through_the_result(self):
+        # Nothing is lost by the None above. This is the same response read the
+        # other way: the reason a caller might have wanted is on the result,
+        # next to the outcome that explains it.
+        body = {"error": "Missing target application", "detail": {"code": 422}}
+
+        with patch.object(gat, "post", return_value=response(201, payload=body)):
+            result = GenerateAccessToken.token_result(BASE)
+
+        assert result.outcome is TokenOutcome.SERVER_ERROR
+        assert result.status == 201
+        assert result.payload == body
+
+    def test_returns_the_payload_of_the_result_only_when_it_minted(self):
+        minted = {"token": "t", "base_url": BASE}
+
+        with patch.object(gat, "post", return_value=response(201, payload=minted)):
             assert GenerateAccessToken.token(BASE) == GenerateAccessToken.token_result(BASE).payload
+
+        # ... and diverges from it otherwise: the result keeps the body, the
+        # accessor reports that nothing was minted.
+        with patch.object(gat, "post", return_value=response(201, payload={"token": "t"})):
+            assert GenerateAccessToken.token_result(BASE).payload is not None
+            assert GenerateAccessToken.token(BASE) is None
 
     def test_still_logs_the_response_status(self, caplog):
         with caplog.at_level("INFO", logger=gat.__name__):
