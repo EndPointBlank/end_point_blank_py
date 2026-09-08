@@ -19,8 +19,9 @@ from unittest.mock import call, patch
 import pytest
 
 from end_point_blank.tokens.access_tokens import AccessTokens
+from end_point_blank.tokens.token_result import TokenOutcome, TokenResult
 
-GENERATOR = "end_point_blank.commands.generate_access_token.GenerateAccessToken.token"
+GENERATOR = "end_point_blank.commands.generate_access_token.GenerateAccessToken.token_result"
 
 BASE = "https://api.example.com/orders"
 
@@ -36,6 +37,42 @@ def payload(token="tok-1", expires_in_seconds=3600, **overrides):
     return body
 
 
+def minted_body(body):
+    """A 2xx that minted something usable, carrying *body* verbatim."""
+    return TokenResult(TokenOutcome.SUCCESS, 201, body)
+
+
+def broken_2xx(body=None, status=201):
+    """intake claiming success and delivering nothing usable -- an unreadable
+    body, no token, or a token with no ``base_url`` to key it under.
+    ``GenerateAccessToken`` classifies all three as a server error carrying the
+    real 2xx status."""
+    return TokenResult(TokenOutcome.SERVER_ERROR, status, body)
+
+
+def minted(token="tok-1", expires_in_seconds=3600, **overrides):
+    """The successful mint the cache is built around."""
+    return minted_body(payload(token, expires_in_seconds, **overrides))
+
+
+def rejected(body=None):
+    """intake refusing the credential: permanent until it is re-issued."""
+    return TokenResult(TokenOutcome.CREDENTIAL_REJECTED, 401, body)
+
+
+def request_rejected(status=422, body=None):
+    """Permanent, but the credential is fine -- intake's 400 and 422 branches."""
+    return TokenResult(TokenOutcome.REQUEST_REJECTED, status, body)
+
+
+def server_error(status=500, body=None):
+    return TokenResult(TokenOutcome.SERVER_ERROR, status, body)
+
+
+# ``post`` has already exhausted its retries by the time this is the answer.
+TRANSPORT_FAILURE = TokenResult(TokenOutcome.TRANSPORT_ERROR)
+
+
 @pytest.fixture(autouse=True)
 def _clean():
     AccessTokens().clear()
@@ -49,7 +86,7 @@ class TestKeyingOnTheBaseUrl:
     exact-or-path-prefix comparison with the longest match winning."""
 
     def test_caches_under_the_base_url_intake_returned(self):
-        returned = payload("tok-1", base_url="https://example.com/orders")
+        returned = minted("tok-1", base_url="https://example.com/orders")
 
         with patch(GENERATOR, return_value=returned) as generate:
             assert AccessTokens().token("https://example.com/orders/widgets/42") == "tok-1"
@@ -64,8 +101,8 @@ class TestKeyingOnTheBaseUrl:
         # needs a token for each, and holding one would send the wrong
         # credential to the second.
         issued = {
-            "https://a.example.com": payload("tok-a", base_url="https://a.example.com"),
-            "https://b.example.com": payload("tok-b", base_url="https://b.example.com"),
+            "https://a.example.com": minted("tok-a", base_url="https://a.example.com"),
+            "https://b.example.com": minted("tok-b", base_url="https://b.example.com"),
         }
 
         with patch(GENERATOR, side_effect=lambda base_url: issued[base_url]) as generate:
@@ -79,8 +116,8 @@ class TestKeyingOnTheBaseUrl:
         # Seeded narrow-first: once the broad entry exists nothing under it can
         # miss, so this is the only order in which both entries can be created.
         responses = [
-            payload("narrow", base_url="https://example.com/orders"),
-            payload("broad", base_url="https://example.com"),
+            minted("narrow", base_url="https://example.com/orders"),
+            minted("broad", base_url="https://example.com"),
         ]
 
         with patch(GENERATOR, side_effect=responses) as generate:
@@ -96,8 +133,8 @@ class TestKeyingOnTheBaseUrl:
         # is a different resource, and reusing the token would present it to a
         # base URL it was never issued for.
         responses = [
-            payload("tok-orders", base_url="https://example.com/orders"),
-            payload("tok-other", base_url="https://example.com/ordersXX"),
+            minted("tok-orders", base_url="https://example.com/orders"),
+            minted("tok-other", base_url="https://example.com/ordersXX"),
         ]
 
         with patch(GENERATOR, side_effect=responses) as generate:
@@ -119,8 +156,8 @@ class TestKeyingOnTheBaseUrl:
         # string should have been stripped before it got here; missing is the
         # right answer when it was not.)
         responses = [
-            payload("tok-1", base_url="https://example.com/orders"),
-            payload("tok-2", base_url="https://example.com/orders"),
+            minted("tok-1", base_url="https://example.com/orders"),
+            minted("tok-2", base_url="https://example.com/orders"),
         ]
 
         with patch(GENERATOR, side_effect=responses) as generate:
@@ -133,7 +170,7 @@ class TestKeyingOnTheBaseUrl:
         # Falls out of the "key + /" rule rather than from any normalization:
         # ".../orders/" starts with ".../orders/". Worth pinning, because it is
         # the one non-identical form that does NOT cost an extra mint.
-        with patch(GENERATOR, return_value=payload("tok-1", base_url="https://example.com/orders")) as generate:
+        with patch(GENERATOR, return_value=minted("tok-1", base_url="https://example.com/orders")) as generate:
             AccessTokens().token("https://example.com/orders")
 
             assert AccessTokens().token("https://example.com/orders/") == "tok-1"
@@ -142,18 +179,18 @@ class TestKeyingOnTheBaseUrl:
 
 class TestFetchingAToken:
     def test_returns_the_generated_token(self):
-        with patch(GENERATOR, return_value=payload("tok-abc")):
+        with patch(GENERATOR, return_value=minted("tok-abc")):
             assert AccessTokens().token(BASE) == "tok-abc"
 
     def test_serves_a_later_call_from_the_cache(self):
-        with patch(GENERATOR, return_value=payload("tok-abc")) as generate:
+        with patch(GENERATOR, return_value=minted("tok-abc")) as generate:
             AccessTokens().token(BASE)
             AccessTokens().token(BASE)
 
         assert generate.call_count == 1
 
     def test_keeps_a_token_with_more_than_the_refresh_buffer_left(self):
-        with patch(GENERATOR, return_value=payload(expires_in_seconds=600)) as generate:
+        with patch(GENERATOR, return_value=minted(expires_in_seconds=600)) as generate:
             AccessTokens().token(BASE)
             AccessTokens().token(BASE)
 
@@ -162,7 +199,7 @@ class TestFetchingAToken:
     def test_regenerates_a_token_that_is_inside_the_refresh_buffer(self):
         # Refreshing two minutes early is what stops a token expiring mid-flight
         # on a slow request.
-        responses = [payload("old", expires_in_seconds=60), payload("new")]
+        responses = [minted("old", expires_in_seconds=60), minted("new")]
 
         with patch(GENERATOR, side_effect=responses) as generate:
             assert AccessTokens().token(BASE) == "old"
@@ -171,23 +208,23 @@ class TestFetchingAToken:
         assert generate.call_count == 2
 
     def test_does_not_retain_a_token_that_arrives_already_expired(self):
-        with patch(GENERATOR, return_value=payload(expires_in_seconds=-1)):
+        with patch(GENERATOR, return_value=minted(expires_in_seconds=-1)):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists(BASE) is False
 
 
 class TestWhenGenerationFails:
-    def test_returns_none_when_the_generator_returns_nothing(self):
-        with patch(GENERATOR, return_value=None):
+    def test_returns_none_when_intake_cannot_be_reached(self):
+        with patch(GENERATOR, return_value=TRANSPORT_FAILURE):
             assert AccessTokens().token(BASE) is None
 
-    def test_returns_none_when_the_payload_carries_an_error_instead_of_a_token(self):
-        with patch(GENERATOR, return_value={"error": "invalid client"}):
+    def test_returns_none_when_intake_rejects_the_credential(self):
+        with patch(GENERATOR, return_value=rejected({"error": "invalid client"})):
             assert AccessTokens().token(BASE) is None
 
     def test_returns_none_when_the_token_field_is_blank(self):
-        with patch(GENERATOR, return_value={"token": ""}):
+        with patch(GENERATOR, return_value=broken_2xx({"token": ""})):
             assert AccessTokens().token(BASE) is None
 
     def test_a_response_without_a_base_url_is_a_failed_mint(self, caplog):
@@ -195,7 +232,7 @@ class TestWhenGenerationFails:
         # token under, so no token is handed back either. Keying on the caller's
         # URL instead would store an entry per resource URL, and nothing here
         # evicts -- a bounded extra request traded for an unbounded leak.
-        with patch(GENERATOR, return_value={"token": "tok-1"}) as generate:
+        with patch(GENERATOR, return_value=broken_2xx({"token": "tok-1"})) as generate:
             assert AccessTokens().token("https://example.com/orders/1") is None
             assert AccessTokens().token("https://example.com/orders/2") is None
 
@@ -208,10 +245,10 @@ class TestWhenGenerationFails:
     def test_discards_the_stale_token_when_a_refresh_fails(self):
         # A failed refresh must not leave the expiring token behind claiming to
         # be usable -- callers would keep presenting it right up to the 401.
-        with patch(GENERATOR, return_value=payload(expires_in_seconds=60)):
+        with patch(GENERATOR, return_value=minted(expires_in_seconds=60)):
             AccessTokens().token(BASE)
 
-        with patch(GENERATOR, return_value=None):
+        with patch(GENERATOR, return_value=TRANSPORT_FAILURE):
             assert AccessTokens().token(BASE) is None
 
         assert AccessTokens().exists(BASE) is False
@@ -221,12 +258,12 @@ class TestWhenGenerationFails:
         # target must not cost the tokens held for every other target.
         other = "https://other.example.com"
 
-        with patch(GENERATOR, return_value=payload(expires_in_seconds=60)):
+        with patch(GENERATOR, return_value=minted(expires_in_seconds=60)):
             AccessTokens().token(BASE)
-        with patch(GENERATOR, return_value=payload("tok-other", base_url=other)):
+        with patch(GENERATOR, return_value=minted("tok-other", base_url=other)):
             AccessTokens().token(other)
 
-        with patch(GENERATOR, return_value=None):
+        with patch(GENERATOR, return_value=TRANSPORT_FAILURE):
             assert AccessTokens().token(BASE) is None
 
         assert AccessTokens().exists(BASE) is False
@@ -235,7 +272,7 @@ class TestWhenGenerationFails:
     def test_leaves_a_live_token_alone_because_it_never_asks(self):
         # A live token covering the URL is served without a generation call at
         # all, so intake's opinion of a deeper path cannot disturb it.
-        with patch(GENERATOR, return_value=payload("tok-1")) as generate:
+        with patch(GENERATOR, return_value=minted("tok-1")) as generate:
             AccessTokens().token(BASE)
 
             assert AccessTokens().token(BASE + "/42") == "tok-1"
@@ -244,10 +281,10 @@ class TestWhenGenerationFails:
         assert AccessTokens().exists(BASE) is True
 
     def test_does_not_cache_the_failure(self):
-        with patch(GENERATOR, return_value=None):
+        with patch(GENERATOR, return_value=TRANSPORT_FAILURE):
             AccessTokens().token(BASE)
 
-        with patch(GENERATOR, return_value=payload("tok-recovered")) as generate:
+        with patch(GENERATOR, return_value=minted("tok-recovered")) as generate:
             assert AccessTokens().token(BASE) == "tok-recovered"
             assert generate.call_count == 1
 
@@ -257,7 +294,7 @@ class TestExists:
         assert AccessTokens().exists(BASE) is False
 
     def test_is_true_for_a_freshly_generated_token(self):
-        with patch(GENERATOR, return_value=payload()):
+        with patch(GENERATOR, return_value=minted()):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists(BASE) is True
@@ -267,13 +304,13 @@ class TestExists:
         # deeper path under a cached base URL reads as covered. Answering False
         # here would report a token as absent that the very next ``token`` call
         # serves from cache.
-        with patch(GENERATOR, return_value=payload()):
+        with patch(GENERATOR, return_value=minted()):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists(BASE + "/widgets/42") is True
 
     def test_is_false_for_a_base_url_no_held_token_covers(self):
-        with patch(GENERATOR, return_value=payload()):
+        with patch(GENERATOR, return_value=minted()):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists("https://elsewhere.example.com") is False
@@ -284,7 +321,7 @@ class TestExists:
         # lands -- so the floor is 30 seconds rather than zero. (It is not the
         # same floor ``token`` refreshes at: that one is two minutes, because
         # refreshing early is cheap and being caught short is not.)
-        with patch(GENERATOR, return_value=payload(expires_in_seconds=10)):
+        with patch(GENERATOR, return_value=minted(expires_in_seconds=10)):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists(BASE) is False
@@ -292,7 +329,7 @@ class TestExists:
 
 class TestInvalidate:
     def test_drops_the_current_token(self):
-        with patch(GENERATOR, return_value=payload()):
+        with patch(GENERATOR, return_value=minted()):
             current = AccessTokens().token(BASE)
 
         AccessTokens().invalidate(current)
@@ -304,8 +341,8 @@ class TestInvalidate:
         # base URL -- and the tokens held for other targets are still good.
         a, b = "https://a.example.com", "https://b.example.com"
         issued = {
-            a: payload("tok-a", base_url=a),
-            b: payload("tok-b", base_url=b),
+            a: minted("tok-a", base_url=a),
+            b: minted("tok-b", base_url=b),
         }
 
         with patch(GENERATOR, side_effect=lambda base_url: issued[base_url]):
@@ -322,7 +359,7 @@ class TestInvalidate:
         # is rejected reports the same stale value; only the first should cause
         # an exchange, because the rest are holding a token that has already
         # been replaced and clearing for them would discard a good one.
-        with patch(GENERATOR, side_effect=[payload("tok-1"), payload("tok-2")]) as generate:
+        with patch(GENERATOR, side_effect=[minted("tok-1"), minted("tok-2")]) as generate:
             stale = AccessTokens().token(BASE)
             AccessTokens().invalidate(stale)
             AccessTokens().token(BASE)
@@ -333,7 +370,7 @@ class TestInvalidate:
             assert generate.call_count == 2
 
     def test_ignores_none(self):
-        with patch(GENERATOR, return_value=payload("tok-1")) as generate:
+        with patch(GENERATOR, return_value=minted("tok-1")) as generate:
             AccessTokens().token(BASE)
 
             AccessTokens().invalidate(None)
@@ -346,9 +383,9 @@ class TestClear:
     def test_drops_every_cached_token(self):
         other = "https://other.example.com"
 
-        with patch(GENERATOR, return_value=payload("a")):
+        with patch(GENERATOR, return_value=minted("a")):
             AccessTokens().token(BASE)
-        with patch(GENERATOR, return_value=payload("b", base_url=other)):
+        with patch(GENERATOR, return_value=minted("b", base_url=other)):
             AccessTokens().token(other)
 
         AccessTokens().clear()
@@ -373,7 +410,7 @@ class TestConcurrency:
             with results_lock:
                 results.append(value)
 
-        with patch(GENERATOR, return_value=payload("tok-1")) as generate:
+        with patch(GENERATOR, return_value=minted("tok-1")) as generate:
             threads = [threading.Thread(target=call_token) for _ in range(callers)]
             for thread in threads:
                 thread.start()
@@ -413,7 +450,7 @@ class TestConcurrency:
                 assert AccessTokens().token(BASE) == "seed"
 
         def generate(base_url):
-            return payload("seed" if base_url == BASE else "other", base_url=base_url)
+            return minted("seed" if base_url == BASE else "other", base_url=base_url)
 
         previous_interval = sys.getswitchinterval()
         sys.setswitchinterval(1e-6)
@@ -438,13 +475,13 @@ class TestConcurrency:
 
 class TestTheExpiryTimestamp:
     def test_accepts_the_z_suffixed_form_intake_sends(self):
-        with patch(GENERATOR, return_value=payload("t", expired_at="2099-01-01T00:00:00Z")):
+        with patch(GENERATOR, return_value=minted("t", expired_at="2099-01-01T00:00:00Z")):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists(BASE) is True
 
     def test_accepts_an_explicit_utc_offset(self):
-        with patch(GENERATOR, return_value=payload("t", expired_at="2099-01-01T00:00:00+00:00")):
+        with patch(GENERATOR, return_value=minted("t", expired_at="2099-01-01T00:00:00+00:00")):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists(BASE) is True
@@ -455,13 +492,13 @@ class TestTheExpiryTimestamp:
     def test_falls_back_to_an_hour_when_the_expiry_is_unusable(self, expired_at):
         # Falling back to a short life keeps the token usable rather than
         # failing the request outright, and the next hour re-syncs with intake.
-        with patch(GENERATOR, return_value=payload("t", expired_at=expired_at)):
+        with patch(GENERATOR, return_value=minted("t", expired_at=expired_at)):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists(BASE) is True
 
     def test_falls_back_to_an_hour_when_the_expiry_is_absent(self):
-        with patch(GENERATOR, return_value={"token": "t", "base_url": BASE}):
+        with patch(GENERATOR, return_value=minted_body({"token": "t", "base_url": BASE})):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists(BASE) is True
@@ -483,7 +520,7 @@ class TestANilBaseUrl:
     place and would pass without the fix."""
 
     def test_a_cold_cache_does_not_raise_and_mints_with_the_nil_url(self):
-        with patch(GENERATOR, return_value=None) as generate:
+        with patch(GENERATOR, return_value=TRANSPORT_FAILURE) as generate:
             assert AccessTokens().token(None) is None
 
         assert generate.call_args == call(None)
@@ -492,10 +529,10 @@ class TestANilBaseUrl:
         # Seed an entry first so the match loop has something to iterate --
         # this is the case that used to raise AttributeError instead of
         # reaching the generator at all.
-        with patch(GENERATOR, return_value=payload("tok-1")):
+        with patch(GENERATOR, return_value=minted("tok-1")):
             AccessTokens().token(BASE)
 
-        with patch(GENERATOR, return_value=None) as generate:
+        with patch(GENERATOR, return_value=TRANSPORT_FAILURE) as generate:
             assert AccessTokens().token(None) is None
 
         assert generate.call_args == call(None)
@@ -503,7 +540,7 @@ class TestANilBaseUrl:
         assert AccessTokens().exists(BASE) is True
 
     def test_exists_is_false_for_none_with_a_warm_cache(self):
-        with patch(GENERATOR, return_value=payload("tok-1")):
+        with patch(GENERATOR, return_value=minted("tok-1")):
             AccessTokens().token(BASE)
 
         assert AccessTokens().exists(None) is False
@@ -523,11 +560,11 @@ class TestARefreshThatResolvesToADifferentCanonicalBaseUrl:
     def _seed_and_refresh_to_a_shorter_url(self):
         # Seed under the longer key with a short TTL so the very next lookup
         # finds it inside the refresh buffer and triggers a mint.
-        with patch(GENERATOR, return_value=payload("old", base_url=self.OLD, expires_in_seconds=60)):
+        with patch(GENERATOR, return_value=minted("old", base_url=self.OLD, expires_in_seconds=60)):
             AccessTokens().token(self.OLD)
 
         # Refresh resolves to a shorter, different canonical base URL.
-        with patch(GENERATOR, return_value=payload("new", base_url=self.NEW, expires_in_seconds=3600)):
+        with patch(GENERATOR, return_value=minted("new", base_url=self.NEW, expires_in_seconds=3600)):
             assert AccessTokens().token(self.OLD) == "new"
 
     def test_the_matched_key_is_removed_once_the_canonical_url_changes(self):
@@ -541,7 +578,7 @@ class TestARefreshThatResolvesToADifferentCanonicalBaseUrl:
         # call re-mints because the shadowing entry is still stale.
         self._seed_and_refresh_to_a_shorter_url()
 
-        with patch(GENERATOR, return_value=payload("should-not-be-minted")) as generate:
+        with patch(GENERATOR, return_value=minted("should-not-be-minted")) as generate:
             assert AccessTokens().token(self.OLD) == "new"
 
         assert generate.call_count == 0
@@ -551,9 +588,220 @@ class TestTheSingleton:
     def test_every_construction_shares_one_cache(self):
         # Callers construct ``AccessTokens()`` fresh at each use site; if that
         # produced a new cache the token would be regenerated on every request.
-        with patch(GENERATOR, return_value=payload()) as generate:
+        with patch(GENERATOR, return_value=minted()) as generate:
             AccessTokens().token(BASE)
             AccessTokens().token(BASE)
 
         assert generate.call_count == 1
         assert AccessTokens() is AccessTokens()
+
+
+class TestBranchingOnWhyAMintFailed:
+    """A caller that cannot tell a rejected credential from a broken intake
+    retries forever against a credential that will never work again, and gives
+    up on an outage that would have cleared. ``token`` still answers None for
+    all of them -- the reason is recorded instead, and queried separately."""
+
+    def test_a_rejected_credential_is_recorded_as_such(self):
+        with patch(GENERATOR, return_value=rejected({"error": "invalid client"})):
+            assert AccessTokens().token(BASE) is None
+
+        failure = AccessTokens().last_failure(BASE)
+        assert failure.outcome is TokenOutcome.CREDENTIAL_REJECTED
+        assert failure.status == 401
+
+    def test_a_rejected_credential_is_logged_loudly_and_distinctly(self, caplog):
+        # Not the generic "Failed to generate access token" line: this one names
+        # the remedy, because no amount of retrying is the remedy.
+        with patch(GENERATOR, return_value=rejected({"error": "invalid client"})):
+            AccessTokens().token(BASE)
+
+        assert "rejected" in caplog.text
+        assert "re-issue" in caplog.text
+        assert BASE in caplog.text
+        assert "Failed to generate access token" not in caplog.text
+
+    def test_a_rejected_request_is_kept_apart_from_a_server_failure(self, caplog):
+        # intake answers 422 when the URL resolves to no registered environment.
+        # Permanent like a 401, but the credential is fine -- so it must not be
+        # reported as a rejected credential either.
+        with patch(GENERATOR, return_value=request_rejected(422, {"error": "Missing target application"})):
+            assert AccessTokens().token(BASE) is None
+
+        failure = AccessTokens().last_failure(BASE)
+        assert failure.outcome is TokenOutcome.REQUEST_REJECTED
+        assert failure.status == 422
+        assert "re-issue" not in caplog.text
+
+    def test_a_server_failure_is_recorded_as_retryable(self, caplog):
+        with patch(GENERATOR, return_value=server_error(503)):
+            assert AccessTokens().token(BASE) is None
+
+        failure = AccessTokens().last_failure(BASE)
+        assert failure.outcome is TokenOutcome.SERVER_ERROR
+        assert failure.status == 503
+        assert "Failed to generate access token" in caplog.text
+        assert "re-issue" not in caplog.text
+
+    def test_a_transport_failure_is_recorded_as_retryable(self):
+        with patch(GENERATOR, return_value=TRANSPORT_FAILURE):
+            assert AccessTokens().token(BASE) is None
+
+        failure = AccessTokens().last_failure(BASE)
+        assert failure.outcome is TokenOutcome.TRANSPORT_ERROR
+        assert failure.status is None
+
+    def test_the_log_leads_with_the_status_of_a_non_2xx(self, caplog):
+        # A caller reading logs, rather than ``last_failure``, still has to be
+        # able to tell 503 from 422.
+        with patch(GENERATOR, return_value=server_error(503, {"error": "upstream down"})):
+            AccessTokens().token(BASE)
+
+        assert "HTTP 503: upstream down" in caplog.text
+
+    def test_a_success_status_with_an_unreadable_body_says_so(self, caplog):
+        # It arrives as a SERVER_ERROR carrying a 2xx status. "HTTP 201" alone
+        # would read as a contradiction in the log.
+        with patch(GENERATOR, return_value=broken_2xx()):
+            assert AccessTokens().token(BASE) is None
+
+        assert "HTTP 201 with an unreadable body" in caplog.text
+        assert AccessTokens().last_failure(BASE).outcome is TokenOutcome.SERVER_ERROR
+
+    def test_a_2xx_carrying_only_a_message_logs_that_message(self, caplog):
+        # No status to lead with -- intake said it worked -- so whatever it did
+        # say is the most useful thing in the line.
+        with patch(GENERATOR, return_value=broken_2xx({"error": "nothing to mint"})):
+            assert AccessTokens().token(BASE) is None
+
+        assert "nothing to mint" in caplog.text
+
+    def test_a_2xx_that_carries_no_usable_token_is_still_a_failure(self):
+        # The broken-server case: a success status with nothing to cache under.
+        # It has to be recorded too, or a caller polling ``last_failure`` after
+        # a None sees nothing and concludes the mint worked.
+        with patch(GENERATOR, return_value=broken_2xx({"token": "tok-1"})):
+            assert AccessTokens().token(BASE) is None
+
+        failure = AccessTokens().last_failure(BASE)
+        assert failure.outcome is TokenOutcome.SERVER_ERROR
+        # The real 2xx rides along, so a reader can tell this apart from a 500.
+        assert failure.status == 201
+
+    def test_a_non_2xx_body_that_happens_to_carry_a_token_is_not_cached(self):
+        # Only a success mints. A 401 body shaped like a token response is not a
+        # token, and caching it would present a credential intake just refused.
+        body = {"token": "tok-1", "base_url": BASE, "expired_at": "2099-01-01T00:00:00Z"}
+
+        with patch(GENERATOR, return_value=rejected(body)):
+            assert AccessTokens().token(BASE) is None
+
+        assert AccessTokens().exists(BASE) is False
+
+
+class TestLastFailure:
+    def test_is_none_before_anything_has_failed(self):
+        assert AccessTokens().last_failure(BASE) is None
+
+    def test_is_none_after_a_mint_that_worked(self):
+        with patch(GENERATOR, return_value=minted("tok-1")):
+            AccessTokens().token(BASE)
+
+        assert AccessTokens().last_failure(BASE) is None
+
+    def test_is_cleared_by_a_later_success(self):
+        # Otherwise a caller that consults it on every None keeps acting on a
+        # rejection the credential rotation already fixed.
+        with patch(GENERATOR, return_value=rejected()):
+            AccessTokens().token(BASE)
+        with patch(GENERATOR, return_value=minted("tok-1")):
+            assert AccessTokens().token(BASE) == "tok-1"
+
+        assert AccessTokens().last_failure(BASE) is None
+
+    def test_answers_for_a_sub_path_of_the_url_that_failed(self):
+        # Callers ask with the URL they are about to call, which is rarely the
+        # exact string a previous failure was recorded under.
+        with patch(GENERATOR, return_value=rejected()):
+            AccessTokens().token(BASE)
+
+        assert AccessTokens().last_failure(BASE + "/widgets/42") is not None
+
+    def test_keeps_failures_for_different_targets_apart(self):
+        other = "https://other.example.com"
+
+        with patch(GENERATOR, return_value=rejected()):
+            AccessTokens().token(BASE)
+        with patch(GENERATOR, return_value=server_error(500)):
+            AccessTokens().token(other)
+
+        assert AccessTokens().last_failure(BASE).outcome is TokenOutcome.CREDENTIAL_REJECTED
+        assert AccessTokens().last_failure(other).outcome is TokenOutcome.SERVER_ERROR
+
+    def test_records_the_most_recent_failure_for_a_target(self):
+        with patch(GENERATOR, return_value=server_error(500)):
+            AccessTokens().token(BASE)
+        with patch(GENERATOR, return_value=rejected()):
+            AccessTokens().token(BASE)
+
+        assert AccessTokens().last_failure(BASE).outcome is TokenOutcome.CREDENTIAL_REJECTED
+
+    def test_is_dropped_by_clear(self):
+        with patch(GENERATOR, return_value=rejected()):
+            AccessTokens().token(BASE)
+
+        AccessTokens().clear()
+
+        assert AccessTokens().last_failure(BASE) is None
+
+    def test_is_none_for_a_nil_url(self):
+        with patch(GENERATOR, return_value=rejected()):
+            AccessTokens().token(BASE)
+
+        assert AccessTokens().last_failure(None) is None
+
+    def test_does_not_grow_without_bound(self):
+        # The leak this bound exists for: a revoked credential fails every mint
+        # indefinitely, and the only thing that clears a record is a successful
+        # mint that is never coming. A service walking /orders/1, /orders/2, ...
+        # would record one per URL forever -- the same unbounded-map trap the
+        # token cache is keyed to avoid.
+        cap = AccessTokens._FAILURE_CAP
+        with patch(GENERATOR, return_value=rejected()):
+            for i in range(cap * 3):
+                AccessTokens().token(f"https://t{i}.example.com/orders")
+
+        assert len(AccessTokens()._failures) == cap
+
+    def test_evicts_the_oldest_record_rather_than_the_newest(self):
+        # The cap is enforced on insert, and what goes is the oldest: a caller
+        # asking why its most recent call failed must still get an answer.
+        cap = AccessTokens._FAILURE_CAP
+        with patch(GENERATOR, return_value=rejected()):
+            for i in range(cap + 1):
+                AccessTokens().token(f"https://t{i}.example.com/orders")
+
+        assert AccessTokens().last_failure("https://t0.example.com/orders") is None
+        assert AccessTokens().last_failure(f"https://t{cap}.example.com/orders") is not None
+
+
+class TestTheLegacyContract:
+    """``token`` and ``exists`` are published API. The status plumbing is
+    additive: their return values are exactly what they were."""
+
+    def test_token_still_answers_a_bare_string(self):
+        with patch(GENERATOR, return_value=minted("tok-abc")):
+            assert AccessTokens().token(BASE) == "tok-abc"
+
+    def test_token_still_answers_none_on_every_kind_of_failure(self):
+        for result in (rejected(), request_rejected(400), server_error(500), broken_2xx(), TRANSPORT_FAILURE):
+            AccessTokens().clear()
+            with patch(GENERATOR, return_value=result):
+                assert AccessTokens().token(BASE) is None
+
+    def test_exists_still_answers_a_bool(self):
+        with patch(GENERATOR, return_value=minted("tok-abc")):
+            AccessTokens().token(BASE)
+
+        assert AccessTokens().exists(BASE) is True
+        assert AccessTokens().exists("https://elsewhere.example.com") is False
