@@ -192,9 +192,10 @@ class AccessTokens:
 
         A record is written whenever a mint hands back no usable token -- which
         includes a 2xx that carried no ``token`` or no ``base_url``, recorded
-        with :attr:`~end_point_blank.tokens.token_result.TokenOutcome.SUCCESS`
-        so a broken server is not mistaken for a rejected one. It is dropped as
-        soon as a mint covering the same URL works, and by :meth:`clear`.
+        with :attr:`~end_point_blank.tokens.token_result.TokenOutcome.SERVER_ERROR`
+        and the real 2xx status, so a broken server is not mistaken for a
+        rejected one. It is dropped as soon as a mint covering the same URL
+        works, and by :meth:`clear`.
 
         Matching is the same exact-or-path-prefix rule ``token`` uses, so the
         URL a caller is about to retry finds the failure recorded for the URL it
@@ -325,21 +326,28 @@ class AccessTokens:
             return "no response"
 
         payload = result.payload
-        detail = payload.get("error") if payload else None
+        detail = payload.get("error") if isinstance(payload, dict) else None
         status = result.status
 
         if status is not None and 200 <= status < 300:
             # A 2xx that produced no usable mint. The status says nothing here
             # -- intake claimed it worked -- so the shape of what came back is
-            # the whole value of the line.
+            # the whole value of the line. It still leads with the status
+            # wherever there is no message to lead with instead: "no response"
+            # would be a lie about a response that arrived.
             if payload is None:
                 # The parse error itself was logged by GenerateAccessToken.
                 return f"HTTP {status} with an unreadable body"
+            if not isinstance(payload, dict):
+                # Valid JSON, but not a document with fields in it -- an array
+                # or a bare string from something in front of intake.
+                return f"HTTP {status} with no usable body"
             if detail:
                 return str(detail)
-            if payload.get("token"):
+            token = payload.get("token")
+            if isinstance(token, str) and token:
                 # Distinct from a rejected request: intake's base_url is NOT
-                # NULL, and it answers 422 rather than minting when the caller's
+                # NULL, and it answers 4xx rather than minting when the caller's
                 # URL resolves to no environment.
                 return "response carried a token but no base_url"
             return "no token in response"

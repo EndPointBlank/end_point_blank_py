@@ -668,6 +668,17 @@ class TestBranchingOnWhyAMintFailed:
         assert "HTTP 201 with an unreadable body" in caplog.text
         assert AccessTokens().last_failure(BASE).outcome is TokenOutcome.SERVER_ERROR
 
+    def test_a_2xx_whose_body_is_not_a_json_object_says_so(self, caplog):
+        # Valid JSON with no fields in it -- an array or a bare string from
+        # something in front of intake. The reason line must not go looking for
+        # an ``error`` key in it, and must not read "no response" about a
+        # response that plainly arrived.
+        with patch(GENERATOR, return_value=broken_2xx(["not", "a", "document"])):
+            assert AccessTokens().token(BASE) is None
+
+        assert "HTTP 201 with no usable body" in caplog.text
+        assert AccessTokens().last_failure(BASE).outcome is TokenOutcome.SERVER_ERROR
+
     def test_a_2xx_carrying_only_a_message_logs_that_message(self, caplog):
         # No status to lead with -- intake said it worked -- so whatever it did
         # say is the most useful thing in the line.

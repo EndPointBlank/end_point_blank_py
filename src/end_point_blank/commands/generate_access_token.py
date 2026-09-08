@@ -34,7 +34,11 @@ class GenerateAccessToken:
         :param base_url: Sent verbatim. intake normalizes it and matches it
             against registered base URLs by longest path prefix.
         :returns: A :class:`~end_point_blank.tokens.token_result.TokenResult`.
-            Never ``None`` -- every failure mode is one of the outcomes.
+            Never ``None`` -- every failure mode is one of the outcomes. An
+            outcome of :attr:`~end_point_blank.tokens.token_result.TokenOutcome.SUCCESS`
+            means a token really was minted, so ``result.payload["token"]`` and
+            ``result.payload["base_url"]`` can be read without re-checking for
+            them.
         """
         config = Configuration()
         body: Dict[str, Any] = {"base_url": base_url}
@@ -72,22 +76,28 @@ class GenerateAccessToken:
         except Exception as exc:
             logger.error("Failed to parse access token response: %s", exc)
             payload = None
-            if outcome is TokenOutcome.SUCCESS:
-                # The one case where the body decides. A 2xx is worth nothing
-                # but the token in it, so a success the SDK cannot read is a
-                # broken server rather than a success.
-                outcome = TokenOutcome.SERVER_ERROR
 
+        # The one place the body gets a say, and only on a 2xx: was a token
+        # actually minted? A body that would not parse, one that is not a JSON
+        # object, one carrying no ``token``, and one carrying a ``token`` with
+        # no ``base_url`` to key it under all arrive here, and all mean the
+        # same thing to a caller -- there is no token.
+        #
+        # Decided once, here, next to the status it depends on. That is what
+        # lets ``AccessTokens`` read ``payload["base_url"]`` on the strength of
+        # the outcome name alone; a second copy of this judgement in that layer
+        # could disagree with this one, and the layer that was wrong would be
+        # the one holding the cache.
+        #
+        # It keeps its real 2xx status -- that is what actually happened -- and
+        # the payload rides along, so the log line can say which way the body
+        # was useless and ``token`` still hands back exactly what it always did.
+        #
+        # SERVER_ERROR rather than a rejection, because intake's base_url is
+        # NOT NULL and it answers 4xx rather than minting when the URL resolves
+        # to no environment. A 2xx without one is a server that broke its own
+        # contract, not a request that was refused.
         if outcome is TokenOutcome.SUCCESS and not GenerateAccessToken._is_usable(payload):
-            # A 2xx that minted nothing usable. It keeps its real 2xx status --
-            # that is what happened -- but it is not a SUCCESS: SUCCESS means a
-            # token and somewhere to key it, and a caller acting on the name
-            # alone would cache nothing and never know why.
-            #
-            # SERVER_ERROR rather than a rejection, because intake's base_url is
-            # NOT NULL and it answers 422 rather than minting when the URL
-            # resolves to no environment. A 2xx without one is a server that
-            # broke its own contract, not a request that was refused.
             outcome = TokenOutcome.SERVER_ERROR
 
         return TokenResult(outcome, status, payload)
@@ -111,14 +121,36 @@ class GenerateAccessToken:
 
     @staticmethod
     def _is_usable(payload: Optional[Dict[str, Any]]) -> bool:
-        """Whether a 2xx body is actually a mint.
+        """Whether a 2xx body is actually a mint: a token, and somewhere to keep
+        it.
 
         ``base_url`` is the canonical URL intake resolved the request to, and it
         is the only thing the token can be cached under -- keying on the URL the
         caller asked about would store an entry per resource, with nothing to
         evict them.
+
+        Both have to be non-empty *strings*, not merely truthy. The token is
+        about to be interpolated into an ``Authorization`` header and the base
+        URL into a dict key and a prefix comparison; a number or a nested object
+        in either field is a broken server, and accepting it would only move the
+        failure somewhere with less context.
+
+        The body is checked for being a JSON object rather than assumed to be
+        one. ``response.json()`` answers a list, a string or a number as happily
+        as a dict, and this runs on the request path of the application the SDK
+        is embedded in: a proxy answering 200 with a JSON array must not be able
+        to raise ``AttributeError`` into a customer's request.
         """
-        return bool(payload and payload.get("token") and payload.get("base_url"))
+        if not isinstance(payload, dict):
+            return False
+        return GenerateAccessToken._present(payload.get("token")) and GenerateAccessToken._present(
+            payload.get("base_url")
+        )
+
+    @staticmethod
+    def _present(value: Any) -> bool:
+        """A field intake filled in: a string with something in it."""
+        return isinstance(value, str) and value != ""
 
     @staticmethod
     def _outcome(status: int) -> TokenOutcome:

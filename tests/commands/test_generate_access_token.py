@@ -245,22 +245,72 @@ class TestTheStatusCarryingResult:
             {"base_url": BASE},
             {"token": "", "base_url": BASE},
             {"token": "tok-abc", "base_url": ""},
+            {"error": "Missing target application"},
+            {"token": 12345, "base_url": BASE},
+            {"token": "tok-abc", "base_url": ["https://api.example.com/orders"]},
         ],
-        ids=["empty", "no-base-url", "no-token", "blank-token", "blank-base-url"],
+        ids=[
+            "empty",
+            "no-base-url",
+            "no-token",
+            "blank-token",
+            "blank-base-url",
+            "an-error-where-the-token-should-be",
+            "non-string-token",
+            "non-string-base-url",
+        ],
     )
     def test_a_2xx_that_minted_nothing_usable_is_a_server_error(self, body):
         # SUCCESS has to mean a token AND somewhere to key it, or a caller
         # branching on the name alone caches nothing and never learns why.
         # SERVER_ERROR rather than a rejection: intake's base_url is NOT NULL
-        # and it answers 422 rather than minting when the URL resolves to
+        # and it answers 4xx rather than minting when the URL resolves to
         # nothing, so a 2xx without one broke its own contract.
+        #
+        # Both fields have to be non-empty *strings*. A truthiness test would
+        # pass a number or a list straight through to an ``Authorization``
+        # header and to a cache key, where the same broken server costs a
+        # confusing failure much further from the response that caused it.
         with patch.object(gat, "post", return_value=response(201, payload=body)):
             result = GenerateAccessToken.token_result(BASE)
 
         assert result.outcome is TokenOutcome.SERVER_ERROR
         # The real 2xx, not a fabricated 5xx: that is what actually happened.
         assert result.status == 201
+        # Invariant: the body survives classification. It is what the failure
+        # log reads to say *how* the response was useless, and what keeps
+        # ``token`` answering exactly what it always did.
         assert result.payload == body
+
+    @pytest.mark.parametrize(
+        "body",
+        [["token", "tok-abc"], "tok-abc", 7],
+        ids=["array", "bare-string", "number"],
+    )
+    def test_a_2xx_whose_body_is_not_a_json_object_is_a_server_error(self, body):
+        # Valid JSON that is not a document. The SDK runs on the request path of
+        # the application it is embedded in, so this must classify rather than
+        # raise ``AttributeError`` out of a customer's request because something
+        # in front of intake answered 200 with an array.
+        with patch.object(gat, "post", return_value=response(201, payload=body)):
+            result = GenerateAccessToken.token_result(BASE)
+
+        assert result.outcome is TokenOutcome.SERVER_ERROR
+        assert result.status == 201
+        assert result.payload == body
+
+    def test_a_2xx_with_a_usable_mint_is_the_only_success(self):
+        # The other side of the table above, stated once: SUCCESS is exactly a
+        # 2xx whose body parsed and carries both non-empty strings, so a caller
+        # that branches on it can read them without checking again.
+        body = {"token": "tok-abc", "base_url": BASE, "expired_at": "2099-01-01T00:00:00Z"}
+
+        with patch.object(gat, "post", return_value=response(200, payload=body)):
+            result = GenerateAccessToken.token_result(BASE)
+
+        assert result.outcome is TokenOutcome.SUCCESS
+        assert result.payload["token"] == "tok-abc"
+        assert result.payload["base_url"] == BASE
 
     def test_the_result_carries_no_retry_predicate(self):
         # Settled across all five SDKs: callers branch on the outcome names.
@@ -287,6 +337,16 @@ class TestTheLegacyContract:
         body = {"error": "whatever"}
 
         with patch.object(gat, "post", return_value=response(status, payload=body)):
+            assert GenerateAccessToken.token(BASE) == body
+
+    def test_returns_a_tokenless_2xx_body_unchanged(self):
+        # The invariant that makes the tightened SUCCESS safe to ship. This body
+        # is now classified SERVER_ERROR, but ``token`` is published API and
+        # must still hand back the parsed body byte for byte -- a caller that
+        # reads ``["error"]`` out of it keeps working.
+        body = {"error": "Missing target application", "detail": {"code": 422}}
+
+        with patch.object(gat, "post", return_value=response(201, payload=body)):
             assert GenerateAccessToken.token(BASE) == body
 
     def test_returns_exactly_the_payload_of_the_result(self):

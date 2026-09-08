@@ -10,18 +10,26 @@
 
   | outcome | status | meaning |
   | --- | --- | --- |
-  | `SUCCESS` | 2xx | the payload is a usable mint — a `token` and the `base_url` to key it under |
+  | `SUCCESS` | 2xx | a token really was minted: the body parsed, and carries a non-empty `token` and the non-empty `base_url` to key it under |
   | `CREDENTIAL_REJECTED` | 401 | permanent; the credential must be re-issued |
   | `REQUEST_REJECTED` | any other 4xx | permanent; the environment is not registered, or the request was malformed |
-  | `SERVER_ERROR` | 5xx, or the real 2xx | transient; a 5xx, or a 2xx that minted nothing usable (unparseable body, no `token`, or a token with no `base_url`) |
+  | `SERVER_ERROR` | 5xx, or the real 2xx | transient; a 5xx, or a 2xx the SDK cannot use — a body that would not parse, a body that is not a JSON object, no `token`, or a `token` with no `base_url` |
   | `TRANSPORT_ERROR` | — | no usable HTTP status was obtained at all: network failure, timeout, retries exhausted |
 
   Outcomes are decided by the **status first, body second**: a 401 whose body
   is not JSON — a proxy or WAF answering with an HTML error page — is still
-  `CREDENTIAL_REJECTED`, never `TRANSPORT_ERROR`. There is deliberately no
-  "should I retry?" boolean; callers branch on the outcome names, because the
-  remedies differ and a boolean would collapse five honest names into two.
-  `TokenOutcome` and `TokenResult` are exported from the package root.
+  `CREDENTIAL_REJECTED`, never `TRANSPORT_ERROR`. The status alone classifies
+  every non-2xx; only on a 2xx does the body decide anything, and the only
+  thing it decides is whether a token was minted. A `SUCCESS` whose token
+  turned out to be absent would leave every caller a second check to remember,
+  and that is the check that gets forgotten — so it is not a success. The
+  parsed body is kept on the result either way, including on a 2xx classified
+  `SERVER_ERROR`, so nothing that used to read it stops working.
+
+  There is deliberately no "should I retry?" boolean; callers branch on the
+  outcome names, because the remedies differ and a boolean would collapse five
+  honest names into two. `TokenOutcome` and `TokenResult` are exported from the
+  package root.
 
 - **`AccessTokens().last_failure(base_url)`** returns the most recent failure
   covering that URL, or `None`. It is cleared by a successful mint and by
@@ -45,7 +53,14 @@
   cache is now gated on the classified outcome rather than on the shape of the
   body.
 - The generic failure log leads with the HTTP status (`HTTP 422: Missing
-  target application`) rather than the message alone.
+  target application`) rather than the message alone, and a 2xx that minted
+  nothing says which way it was useless — `HTTP 201 with an unreadable body`,
+  `HTTP 201 with no usable body`, `response carried a token but no base_url`,
+  `no token in response`.
+- A 2xx whose body is valid JSON but not an object — an array or a bare string
+  from something in front of intake — is classified rather than raised. It used
+  to reach `payload.get(...)` and throw `AttributeError` into the calling
+  application's request.
 
 `GenerateAccessToken.token()`, `AccessTokens().token()` and
 `AccessTokens().exists()` are unchanged — same arguments, same return values,
