@@ -5,6 +5,8 @@ import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from .token_result import TokenOutcome, TokenResult
+
 logger = logging.getLogger(__name__)
 
 _REFRESH_BUFFER = timedelta(minutes=2)
@@ -34,11 +36,29 @@ class AccessTokens:
     thread minted a token for a second target while another was doing a lookup.
 
     Tokens are automatically refreshed when they are within 2 minutes of expiry.
+
+    Why a mint failed is kept alongside the tokens and read back with
+    :meth:`last_failure`. ``token`` still answers ``None`` for every failure --
+    that contract is published -- so the reason has to be queryable separately
+    or a caller cannot tell a credential that must be re-issued from an intake
+    that is briefly down. The failure map follows the same copy-on-write rule as
+    ``_entries``, and for the same reason: :meth:`last_failure` reads it without
+    the lock.
+
     Equivalent to the Ruby gem's ``EndPointBlank::AccessTokens``.
     """
 
     _instance: Optional["AccessTokens"] = None
     _init_lock = threading.Lock()
+
+    # Failures are keyed on the URL the caller asked about, which -- unlike a
+    # minted entry's canonical key -- a caller can invent without limit: a
+    # service walking /orders/1, /orders/2, ... against a dead intake would
+    # record one per resource. So the map is capped, and past the cap it is
+    # dropped and restarted rather than grown. It is a diagnostic, not a cache;
+    # losing older entries costs nothing, and an unbounded map would be the
+    # exact leak ``_entries`` is keyed to avoid.
+    _FAILURE_CAP = 64
 
     def __new__(cls) -> "AccessTokens":
         if cls._instance is None:
@@ -46,6 +66,7 @@ class AccessTokens:
                 if cls._instance is None:
                     instance = super().__new__(cls)
                     instance._entries: dict = {}
+                    instance._failures: dict = {}
                     instance._lock = threading.Lock()
                     cls._instance = instance
         return cls._instance
@@ -60,6 +81,8 @@ class AccessTokens:
             matches it against registered base URLs by longest path prefix.
         :returns: The access token string, or ``None`` if generation failed --
             which includes a response that carried a token but no ``base_url``.
+            ``None`` says nothing about *why*; call :meth:`last_failure` to find
+            out whether the credential was rejected or intake was simply down.
         """
         entry = self._match(base_url)
         if self._usable(entry):
@@ -81,7 +104,8 @@ class AccessTokens:
             matched_key = self._match_key(base_url, self._entries)
 
             from ..commands.generate_access_token import GenerateAccessToken
-            payload = GenerateAccessToken.token(base_url)
+            result = GenerateAccessToken.token_result(base_url)
+            payload = result.payload
 
             # The key is what intake resolved to, and only that. There is no
             # fallback to the requested URL: that would key on the resource the
@@ -91,7 +115,10 @@ class AccessTokens:
             # cannot be found, so no token is handed back either.
             key = payload.get("base_url") if payload else None
 
-            if payload and payload.get("token") and key:
+            # ``result.succeeded`` gates the cache as well as the token/key
+            # check: a non-2xx body shaped like a token response is not a token,
+            # and storing one would present a credential intake just refused.
+            if result.succeeded and payload and payload.get("token") and key:
                 entries = self._entries
                 if matched_key is not None and matched_key != key:
                     entries = {k: v for k, v in entries.items() if k != matched_key}
@@ -102,6 +129,7 @@ class AccessTokens:
                         "expired_at": self._parse_expiry(payload.get("expired_at")),
                     },
                 }
+                self._forget_failures(base_url, key)
                 return payload["token"]
 
             # A failed refresh must not leave an expiring token behind claiming
@@ -112,17 +140,67 @@ class AccessTokens:
             stale = matched_key
             if stale is not None:
                 self._entries = {k: v for k, v in self._entries.items() if k != stale}
-            logger.error(
-                "Failed to generate access token for %s: %s",
-                base_url,
-                self._failure_reason(payload),
-            )
+
+            self._record_failure(base_url, result)
+
+            if result.outcome is TokenOutcome.CREDENTIAL_REJECTED:
+                # Loud and separate on purpose. Every other failure here is
+                # something to wait out; this one is not, and a line that reads
+                # like the others buries the only case an operator has to act
+                # on. Retrying is not suppressed -- that is a separate decision
+                # a caller makes off ``last_failure`` -- but the log must not
+                # pretend the retries are going anywhere.
+                logger.error(
+                    "EndPointBlank rejected the credential while generating an access token "
+                    "for %s (HTTP 401). Retrying will not help: the client_id/client_secret "
+                    "is invalid or revoked and must be re-issued.",
+                    base_url,
+                )
+            else:
+                logger.error(
+                    "Failed to generate access token for %s: %s",
+                    base_url,
+                    self._failure_reason(result),
+                )
             return None
 
     def exists(self, base_url: str) -> bool:
         """Returns ``True`` if a token covering *base_url* has 30+ seconds left."""
         entry = self._match(base_url)
         return bool(entry and entry["expired_at"] > datetime.now(tz=timezone.utc) + _MIN_TTL)
+
+    def last_failure(self, base_url: str) -> Optional[TokenResult]:
+        """
+        Returns the most recent mint failure covering *base_url*, or ``None``.
+
+        ``token`` answers ``None`` for every kind of failure, so this is how a
+        caller finds out which kind it was::
+
+            if tokens.token(url) is None:
+                failure = tokens.last_failure(url)
+                if failure and not failure.retryable:
+                    ...  # a 401 needs a new credential; a 422 needs the
+                         # environment registered. Backing off achieves nothing.
+
+        A record is written whenever a mint hands back no usable token -- which
+        includes a 2xx that carried no ``token`` or no ``base_url``, recorded
+        with :attr:`~end_point_blank.tokens.token_result.TokenOutcome.SUCCESS`
+        so a broken server is not mistaken for a rejected one. It is dropped as
+        soon as a mint covering the same URL works, and by :meth:`clear`.
+
+        Matching is the same exact-or-path-prefix rule ``token`` uses, so the
+        URL a caller is about to retry finds the failure recorded for the URL it
+        tried before.
+
+        :param base_url: The URL you asked for a token for.
+        :returns: The recorded
+            :class:`~end_point_blank.tokens.token_result.TokenResult`, or
+            ``None`` if nothing covering *base_url* has failed since the last
+            success.
+        """
+        failures = self._failures  # One atomic read; writes replace, never mutate.
+        key = self._match_key(base_url, failures)
+        return failures.get(key) if key is not None else None
 
     def invalidate(self, stale_token: Optional[str]) -> None:
         """
@@ -150,9 +228,38 @@ class AccessTokens:
             }
 
     def clear(self) -> None:
-        """Discards every held token."""
+        """Discards every held token, and every recorded failure with them."""
         with self._lock:
             self._entries = {}
+            self._failures = {}
+
+    def _record_failure(self, base_url: str, result: TokenResult) -> None:
+        """Remembers why a mint produced no token. Caller holds ``_lock``.
+
+        Replaces the map rather than mutating it, exactly as the token cache
+        does: :meth:`last_failure` reads it on the fast path without the lock,
+        and mutating in place would raise "dictionary changed size during
+        iteration" in the matcher the moment a second target failed while
+        another thread was querying.
+        """
+        failures = self._failures if len(self._failures) < self._FAILURE_CAP else {}
+        self._failures = {**failures, base_url: result}
+
+    def _forget_failures(self, base_url: str, key: str) -> None:
+        """Drops the records a successful mint has just answered. Caller holds
+        ``_lock``.
+
+        Both the URL that was asked for and everything under the canonical key
+        intake resolved to: the failure may well have been recorded under a
+        deeper resource URL than the one the token ends up keyed on.
+        """
+        if not self._failures:
+            return
+        self._failures = {
+            url: failure
+            for url, failure in self._failures.items()
+            if url != base_url and url != key and not url.startswith(key + "/")
+        }
 
     @staticmethod
     def _match_key(base_url: str, entries: dict) -> Optional[str]:
@@ -187,16 +294,27 @@ class AccessTokens:
         return entries.get(key) if key is not None else None
 
     @staticmethod
-    def _failure_reason(payload: Optional[dict]) -> str:
-        """Why a mint produced no usable token, for the log."""
-        if not payload:
+    def _failure_reason(result: TokenResult) -> str:
+        """Why a mint produced no usable token, for the log.
+
+        The rejected-credential case never reaches here: it has a line of its
+        own, because it is the only one an operator has to act on.
+        """
+        if result.outcome is TokenOutcome.TRANSPORT_ERROR:
             return "no response"
-        if payload.get("error"):
-            return payload["error"]
-        if payload.get("token"):
+
+        payload = result.payload
+        detail = payload.get("error") if payload else None
+        if not result.succeeded:
+            # The status is the actionable part, so it leads even when intake
+            # also sent a message.
+            return f"HTTP {result.status}{': ' + str(detail) if detail else ''}"
+        if detail:
+            return str(detail)
+        if payload and payload.get("token"):
             # Distinct from a rejected request: intake's base_url is NOT NULL,
             # and it answers 422 rather than minting when the caller's URL
-            # resolves to no environment. A 201 without one is a broken server.
+            # resolves to no environment. A 2xx without one is a broken server.
             return "response carried a token but no base_url"
         return "no token in response"
 
