@@ -31,6 +31,7 @@ from unittest.mock import patch
 import pytest
 
 from end_point_blank.request_store import RequestStore
+from end_point_blank.unauthorized_error import UnauthorizedError
 
 DEPRECATION = {"deprecated_at": "2026-01-01T00:00:00Z", "sunset_at": "2026-11-11T11:11:11Z"}
 EXPECTED_DEPRECATION = "@1767225600"
@@ -91,6 +92,31 @@ class WsgiIntegration:
 
         return Result(seen["status"], seen["headers"], dict(recorded))
 
+    def refuse(self, error):
+        """The status recorded for a refusal that propagates out of the app."""
+        from end_point_blank.middleware.report_interaction import ReportInteractionMiddleware
+
+        def app(_environ, _start):
+            raise error
+
+        environ = {
+            "REQUEST_METHOD": "GET",
+            "PATH_INFO": "/students",
+            "QUERY_STRING": "",
+            "wsgi.input": BytesIO(b""),
+            "SERVER_NAME": "localhost",
+            "HTTP_HOST": "localhost",
+        }
+
+        target = "end_point_blank.middleware.report_interaction"
+        with patch(f"{target}.RequestWriter"), \
+             patch(f"{target}.ResponseWriter") as response_writer, \
+             patch(f"{target}.ExceptionWriter"):
+            with pytest.raises(UnauthorizedError):
+                list(ReportInteractionMiddleware(app)(environ, lambda s, h, e=None: None))
+
+        return response_writer.write.call_args.kwargs["status"]
+
 
 class DjangoIntegration:
     """The Django middleware."""
@@ -120,6 +146,24 @@ class DjangoIntegration:
             recorded = response_writer.write.call_args.kwargs.get("headers", {})
 
         return Result(result.status_code, dict(result.items()), dict(recorded))
+
+    def refuse(self, error):
+        """The status recorded for a refusal that propagates out of the view."""
+        from django.test import RequestFactory
+
+        from end_point_blank.django.middleware import ReportInteractionMiddleware
+
+        def get_response(_request):
+            raise error
+
+        target = "end_point_blank.django.middleware"
+        with patch(f"{target}.RequestWriter"), \
+             patch(f"{target}.ResponseWriter") as response_writer, \
+             patch(f"{target}.ExceptionWriter"):
+            with pytest.raises(UnauthorizedError):
+                ReportInteractionMiddleware(get_response)(RequestFactory().get("/students"))
+
+        return response_writer.write.call_args.kwargs["status"]
 
 
 INTEGRATIONS = [
@@ -203,3 +247,30 @@ class TestRequestStoreContract:
 
         assert RequestStore.get_deprecation() is None
         assert RequestStore.get_source_application_environment_id() is None
+
+
+@pytest.mark.parametrize("integration", INTEGRATIONS)
+class TestRefusalContract:
+    """What intake is told about a request that was refused.
+
+    Both integrations re-raise the refusal without reporting it as an
+    application error -- that part was already shared. What was not shared was
+    the response row: neither one recorded a status for it, because the refusal
+    never reaches the response object either integration reads its status from.
+    This is the behaviour a provider expects regardless of framework, so it is
+    asserted against both from one place.
+    """
+
+    def test_the_refusing_status_reaches_the_response_row(self, integration):
+        assert integration.refuse(UnauthorizedError("denied", 403)) == 403
+
+    def test_a_rejected_credential_is_recorded_as_401(self, integration):
+        assert integration.refuse(UnauthorizedError("nope", 401)) == 401
+
+    def test_an_unreachable_check_is_recorded_as_503(self, integration):
+        assert integration.refuse(UnauthorizedError("unavailable", 503)) == 503
+
+    def test_a_refusal_is_never_recorded_without_a_status(self, integration):
+        # Intake rejects a response row with a null status, so a refusal
+        # recorded as None is a row that silently never lands at all.
+        assert integration.refuse(UnauthorizedError("denied", 403)) is not None

@@ -221,6 +221,80 @@ class TestUnauthorizedRequests:
         exception_writer.write.assert_not_called()
 
 
+    def test_the_refusing_status_is_what_gets_recorded(self, response_writer):
+        # The refusal never reaches the response object, so without help the
+        # response row went to intake with a null status -- the one value intake
+        # rejects, which silently dropped the row for every denied request. The
+        # status that did the refusing is on the exception; record that.
+        middleware = ReportInteractionMiddleware(
+            lambda r: (_ for _ in ()).throw(UnauthorizedError("denied", 403))
+        )
+
+        with pytest.raises(UnauthorizedError):
+            middleware(post_request())
+
+        assert response_writer.write.call_args.kwargs["status"] == 403
+
+    def test_a_rejected_credential_is_recorded_as_401(self, response_writer):
+        middleware = ReportInteractionMiddleware(
+            lambda r: (_ for _ in ()).throw(UnauthorizedError("nope", 401))
+        )
+
+        with pytest.raises(UnauthorizedError):
+            middleware(post_request())
+
+        assert response_writer.write.call_args.kwargs["status"] == 401
+
+    def test_the_refusal_is_not_recorded_as_a_server_error(self, response_writer):
+        # A refusal is the system working. Recording it as 500 would put routine
+        # denials in with real failures.
+        #
+        # Guard, not a regression test: it also passes against the pre-change
+        # code, which recorded None here -- also not 500, and also wrong.
+        middleware = ReportInteractionMiddleware(
+            lambda r: (_ for _ in ()).throw(UnauthorizedError("denied", 403))
+        )
+
+        with pytest.raises(UnauthorizedError):
+            middleware(post_request())
+
+        assert response_writer.write.call_args.kwargs["status"] != 500
+
+    def test_the_reason_is_recorded_as_the_body(self, response_writer):
+        middleware = ReportInteractionMiddleware(
+            lambda r: (_ for _ in ()).throw(UnauthorizedError("Authorization failed: access_denied", 403))
+        )
+
+        with pytest.raises(UnauthorizedError):
+            middleware(post_request())
+
+        assert response_writer.write.call_args.kwargs["body"] == (
+            "Authorization failed: access_denied"
+        )
+
+    def test_a_status_the_response_already_reported_is_not_overwritten(self, response_writer):
+        # The exception's status is a stand-in for when the response never
+        # formed. If the app answered 201 and the refusal surfaced only while
+        # the body was being read, 201 is what the caller received and is the
+        # truer record.
+        #
+        # Guard, not a regression test: the pre-change code passes it too. It
+        # pins the precedence so a later change cannot make the stand-in win
+        # over a status the caller actually received.
+        response = MagicMock()
+        response.status_code = 201
+        response.items.return_value = []
+        type(response).content = property(
+            lambda self: (_ for _ in ()).throw(UnauthorizedError("denied", 403))
+        )
+        middleware = ReportInteractionMiddleware(lambda r: response)
+
+        with pytest.raises(UnauthorizedError):
+            middleware(post_request())
+
+        assert response_writer.write.call_args.kwargs["status"] == 201
+
+
 class TestProcessException:
     def test_reports_an_application_error(self, exception_writer):
         # Django runs process_exception before the exception can reach __call__,

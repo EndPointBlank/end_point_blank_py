@@ -175,3 +175,67 @@ class TestTheVersionSentToIntake:
             authorized(lambda r: HttpResponse("ok"))(request)
 
         assert authorize.call_args[0][2] == "2"
+
+
+class TestTheStatusOnTheRefusal:
+    """Intake's verdict has to reach the application's error handler.
+
+    A Django provider renders the refusal itself, typically off
+    ``exception.status_code``. While the error carried no status, every refusal
+    that provider rendered was a 401 -- including intake's 403 for
+    ``access_denied``.
+    """
+
+    def test_a_denied_grant_arrives_as_403(self, decorator):
+        decorate, target, _ = decorator
+
+        @decorate
+        def view(request):
+            return HttpResponse("ok")
+
+        with patch(target, return_value=response(403, payload={"error": "access_denied"})):
+            with pytest.raises(UnauthorizedError) as raised:
+                view(django_request())
+
+        assert raised.value.status_code == 403
+
+    def test_a_rejected_credential_arrives_as_401(self, decorator):
+        decorate, target, _ = decorator
+
+        @decorate
+        def view(request):
+            return HttpResponse("ok")
+
+        with patch(target, return_value=response(401, payload={"error": "invalid_client"})):
+            with pytest.raises(UnauthorizedError) as raised:
+                view(django_request())
+
+        assert raised.value.status_code == 401
+
+    def test_an_unreachable_service_is_a_503_rather_than_a_401(self, decorator):
+        # Nothing refused the caller; the check could not be made. Blaming the
+        # credential would send them to re-issue a credential that is fine.
+        decorate, target, _ = decorator
+
+        @decorate
+        def view(request):
+            return HttpResponse("ok")
+
+        with patch(target, return_value=None):
+            with pytest.raises(UnauthorizedError) as raised:
+                view(django_request())
+
+        assert raised.value.status_code == 503
+
+    def test_an_intake_failure_keeps_its_own_status(self, decorator):
+        decorate, target, _ = decorator
+
+        @decorate
+        def view(request):
+            return HttpResponse("ok")
+
+        with patch(target, return_value=response(502, text="Bad Gateway")):
+            with pytest.raises(UnauthorizedError) as raised:
+                view(django_request())
+
+        assert raised.value.status_code == 502

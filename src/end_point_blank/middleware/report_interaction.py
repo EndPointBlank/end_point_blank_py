@@ -92,7 +92,13 @@ class ReportInteractionMiddleware:
             result = self._app(environ, wrapped_start_response)
             logger.debug("[middleware] Flask app returned (%.3fs)", time.monotonic() - t0)
             return result
-        except UnauthorizedError:
+        except UnauthorizedError as exc:
+            # Same gap the Django middleware has: a refusal that propagates
+            # never reaches start_response, so status_holder stays None and the
+            # response row goes to intake with a null status. The refusing
+            # status is on the exception, so record that.
+            if status_holder[0] is None:
+                status_holder[0] = exc.status_code
             raise
         except Exception as exc:
             ExceptionWriter.write(exc)

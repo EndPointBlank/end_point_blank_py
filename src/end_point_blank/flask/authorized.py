@@ -33,7 +33,7 @@ def authorized(func: Callable) -> Callable:
         from flask import request
         from ..commands.endpoint_authorize import EndpointAuthorize
         from ..commands.version_finder import VersionFinder
-        from ..unauthorized_error import UnauthorizedError
+        from ..unauthorized_error import refusal_from
 
         t0 = time.monotonic()
         environ = request.environ
@@ -45,13 +45,7 @@ def authorized(func: Callable) -> Callable:
         logger.debug("[authorized] authorize returned in %.3fs", time.monotonic() - t0)
 
         if response is None or response.status_code != 201:
-            error_msg = "Authorization service unavailable"
-            if response is not None:
-                try:
-                    error_msg = response.json().get("error", response.text)
-                except Exception:
-                    error_msg = response.text
-            raise UnauthorizedError(f"Authorization failed: {error_msg}")
+            raise refusal_from(response, "Authorization")
 
         logger.debug("[authorized] calling view function (%.3fs)", time.monotonic() - t0)
         result = func(*args, **kwargs)

@@ -74,13 +74,33 @@ class ReportInteractionMiddleware:
                 headers = {}
             body = _response_body(response)
             return response
-        except UnauthorizedError:
+        except UnauthorizedError as exc:
+            # A refusal is neither a crash nor an unknown, and the status that
+            # produced it is right here on the exception. Without this branch
+            # the `finally` below recorded status=None on every refusal that
+            # propagated -- the one value intake will not accept -- so the
+            # response row for a denied request was silently dropped. 500 is
+            # equally wrong here: nothing failed, a caller was told no.
+            #
+            # Rails' Rack middleware, which sits in the same position behind
+            # the same blind spot, resolves it the same way:
+            #   rescue UnauthorizedError => e
+            #     status ||= e.status || 401
+            #     body   ||= e.message
+            if status is None:
+                status = exc.status_code
+            if body is None:
+                body = str(exc)
             raise
         except Exception as exc:
             # The exception will be rendered by an outer middleware (e.g.
             # JsonErrorMiddleware) which sits outside this one, so we never
             # see the rendered status / body. Synthesize them so the response
             # row still gets recorded — intake requires a non-nil status.
+            #
+            # 500 stays right for this branch specifically: an unhandled
+            # application error is what the caller will be served, and the SDK
+            # has no truer status to offer. Only the refusal above knows better.
             if status is None:
                 status = 500
             if body is None:
