@@ -30,7 +30,7 @@ def authenticated(func: Callable) -> Callable:
         from flask import request
         from ..commands.basic_authenticate import BasicAuthenticate
         from ..commands.version_finder import VersionFinder
-        from ..unauthorized_error import UnauthorizedError
+        from ..unauthorized_error import refusal_from
 
         environ = request.environ
         path = request.path
@@ -39,13 +39,7 @@ def authenticated(func: Callable) -> Callable:
         response = BasicAuthenticate.authenticate(environ, path, version)
 
         if response is None or response.status_code != 201:
-            error_msg = "Authentication service unavailable"
-            if response is not None:
-                try:
-                    error_msg = response.json().get("error", response.text)
-                except Exception:
-                    error_msg = response.text
-            raise UnauthorizedError(f"Authentication failed: {error_msg}")
+            raise refusal_from(response, "Authentication")
 
         return func(*args, **kwargs)
 

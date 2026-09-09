@@ -215,6 +215,27 @@ def sensitive_view():
     return "Hello, authorized user!"
 ```
 
+The error carries intake's own verdict as `status_code`, so your handler can tell the two
+refusals apart — 401 means the credential was not accepted, 403 means the credential is fine
+but no grant covers this endpoint. They send an integrator to two different places, so they
+must not be collapsed:
+
+```python
+@app.errorhandler(UnauthorizedError)
+def handle_refusal(error):
+    return {"error": str(error)}, error.status_code
+```
+
+| intake answered | `status_code` |
+| --- | --- |
+| 401 | `401` — re-check or re-issue the credential |
+| 403 | `403` — ask for a grant covering this endpoint |
+| any other non-201 | that status, verbatim |
+| nothing at all | `503` — the check could not be made |
+
+`UnauthorizedError("message")` still works and defaults to 401; the status is an optional
+second argument.
+
 Successful authorization results are cached in-process for `cache_ttl` seconds (default 300) to
 avoid a network round trip on every request.
 

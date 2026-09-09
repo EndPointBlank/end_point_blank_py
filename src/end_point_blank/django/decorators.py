@@ -34,20 +34,14 @@ def authenticated(view_func: Callable) -> Callable:
     def wrapper(request, *args, **kwargs):
         from ..commands.basic_authenticate import BasicAuthenticate
         from ..commands.version_finder import VersionFinder
-        from ..unauthorized_error import UnauthorizedError
+        from ..unauthorized_error import refusal_from
 
         environ = request.environ
         version = VersionFinder().find(environ)
         response = BasicAuthenticate.authenticate(environ, _route_path(request), version)
 
         if response is None or response.status_code != 201:
-            error_msg = "Authentication service unavailable"
-            if response is not None:
-                try:
-                    error_msg = response.json().get("error", response.text)
-                except Exception:
-                    error_msg = response.text
-            raise UnauthorizedError(f"Authentication failed: {error_msg}")
+            raise refusal_from(response, "Authentication")
 
         return view_func(request, *args, **kwargs)
 
@@ -69,20 +63,14 @@ def authorized(view_func: Callable) -> Callable:
     def wrapper(request, *args, **kwargs):
         from ..commands.endpoint_authorize import EndpointAuthorize
         from ..commands.version_finder import VersionFinder
-        from ..unauthorized_error import UnauthorizedError
+        from ..unauthorized_error import refusal_from
 
         environ = request.environ
         version = VersionFinder().find(environ)
         response = EndpointAuthorize.authorize(environ, _route_path(request), version)
 
         if response is None or response.status_code != 201:
-            error_msg = "Authorization service unavailable"
-            if response is not None:
-                try:
-                    error_msg = response.json().get("error", response.text)
-                except Exception:
-                    error_msg = response.text
-            raise UnauthorizedError(f"Authorization failed: {error_msg}")
+            raise refusal_from(response, "Authorization")
 
         return view_func(request, *args, **kwargs)
 

@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+
+- **A refusal now says which refusal it was.** `UnauthorizedError` carries a
+  `status_code`, and the `authenticated` / `authorized` decorators pass the
+  status intake answered with instead of dropping it:
+
+  ```python
+  try:
+      ...
+  except UnauthorizedError as error:
+      return JsonResponse({"error": str(error)}, status=error.status_code)
+  ```
+
+  | intake answered | `status_code` | what it tells the integrator |
+  | --- | --- | --- |
+  | 401 | `401` | the credential was not accepted — re-check or re-issue it |
+  | 403 | `403` | the credential is fine; no grant covers this endpoint — ask for one |
+  | any other non-201 | that status | intake's own verdict, verbatim |
+  | nothing at all | `503` | the check could not be made; nothing judged this caller |
+
+  Every Python refusal used to arrive as a 401, because the exception had
+  nowhere to put the status and the raise sites threw it away. 401 and 403 send
+  an integrator to two different places, so collapsing them sent half of them to
+  debug the wrong thing. The other SDKs each carry the same value under their
+  own idiomatic name — `statusCode` in JS, `getStatusCode()` in Java, `status`
+  in Ruby, and structurally as `{:error, status, body}` in Elixir; this is
+  Python's.
+
+  `UnauthorizedError("message")` is unchanged and still means what it meant:
+  the status defaults to 401. The status is the optional second positional
+  argument, and it survives a pickle round trip rather than quietly reverting
+  to the default on the far side.
+
+### Changed
+
+- **An unreachable intake is a 503, not a 401.** When intake does not answer at
+  all, nothing refused the caller and no credential was judged, so blaming the
+  credential sent integrators to re-issue one that was fine. This is also what
+  the other four SDKs already send for the same case.
+- **A refusal is no longer recorded to intake with a null status.** Both the
+  Django and the WSGI middleware re-raise `UnauthorizedError` without reporting
+  it as an application error — but neither recorded a status for it, because the
+  refusal never reaches the response object each one reads its status from. The
+  response row went out with `status: null`, which intake rejects, so the row for
+  a denied request silently never landed. Both now record the refusing status.
+  The synthesized `500` stays where it belongs: on a genuine unhandled
+  application error, which is what the caller will actually be served.
+- The four decorator refusal sites — Flask and Django x authenticate and
+  authorize — were four transcriptions of one decision and now share one
+  function, `unauthorized_error.refusal_from`. Four copies is how one site
+  acquires a fix the other three do not, which is how the status came to be
+  dropped at all four at once.
+
 ## 0.7.0
 
 ### Added

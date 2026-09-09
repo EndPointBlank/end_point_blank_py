@@ -31,7 +31,7 @@ from .configuration import Configuration, LogMode
 from .tokens.token_result import TokenOutcome, TokenResult
 from .unauthorized_error import UnauthorizedError
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 
 def configure(

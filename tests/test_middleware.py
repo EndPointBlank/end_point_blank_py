@@ -79,3 +79,38 @@ def test_clears_store_even_after_exception():
             list(middleware(make_environ(), lambda s, h: None))
 
     assert RequestStore.get() is None
+
+
+def test_a_refusal_records_the_status_that_refused():
+    # The WSGI middleware never sees start_response when a refusal propagates,
+    # so the response row went to intake with a null status. The refusing status
+    # lives on the exception.
+    def app(environ, start_response):
+        raise UnauthorizedError("Authorization failed: access_denied", 403)
+
+    middleware = ReportInteractionMiddleware(app)
+
+    with patch("end_point_blank.middleware.report_interaction.ResponseWriter") as response_writer:
+        with pytest.raises(UnauthorizedError):
+            list(middleware(make_environ(), lambda s, h: None))
+
+    assert response_writer.write.call_args.kwargs["status"] == 403
+
+
+def test_a_refusal_does_not_overwrite_a_status_the_application_already_sent():
+    # If the app got as far as start_response, that is what the caller received
+    # and it is the truer record.
+    #
+    # Guard, not a regression test: the pre-change code passes it too. It pins
+    # the precedence the test above depends on.
+    def app(environ, start_response):
+        start_response("200 OK", [])
+        raise UnauthorizedError("denied", 403)
+
+    middleware = ReportInteractionMiddleware(app)
+
+    with patch("end_point_blank.middleware.report_interaction.ResponseWriter") as response_writer:
+        with pytest.raises(UnauthorizedError):
+            list(middleware(make_environ(), lambda s, h: None))
+
+    assert response_writer.write.call_args.kwargs["status"] == 200

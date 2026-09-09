@@ -147,3 +147,43 @@ class TestTheDecoratedView:
         with app.test_request_context("/students/5"):
             with patch(AUTHORIZE, return_value=response(201)):
                 assert view(student_id=5) == "student 5"
+
+
+class TestTheStatusOnTheRefusal:
+    """Intake's verdict has to reach the application's error handler, which
+    renders the refusal off the error. While the error carried no status, every
+    refusal a Flask provider rendered was a 401 -- including intake's 403."""
+
+    def test_a_denied_grant_arrives_as_403(self, app):
+        with app.test_request_context("/students/5"):
+            with patch(AUTHORIZE, return_value=response(403, payload={"error": "access_denied"})):
+                with pytest.raises(UnauthorizedError) as raised:
+                    authorized(lambda: "ok")()
+
+        assert raised.value.status_code == 403
+
+    def test_a_rejected_credential_arrives_as_401(self, app):
+        with app.test_request_context("/students/5"):
+            with patch(AUTHORIZE, return_value=response(401, payload={"error": "invalid_client"})):
+                with pytest.raises(UnauthorizedError) as raised:
+                    authorized(lambda: "ok")()
+
+        assert raised.value.status_code == 401
+
+    def test_an_unreachable_service_is_a_503_rather_than_a_401(self, app):
+        # Nothing refused the caller; the check could not be made. Blaming the
+        # credential would send them to re-issue a credential that is fine.
+        with app.test_request_context("/students/5"):
+            with patch(AUTHORIZE, return_value=None):
+                with pytest.raises(UnauthorizedError) as raised:
+                    authorized(lambda: "ok")()
+
+        assert raised.value.status_code == 503
+
+    def test_an_intake_failure_keeps_its_own_status(self, app):
+        with app.test_request_context("/students/5"):
+            with patch(AUTHORIZE, return_value=response(502, text="Bad Gateway")):
+                with pytest.raises(UnauthorizedError) as raised:
+                    authorized(lambda: "ok")()
+
+        assert raised.value.status_code == 502
