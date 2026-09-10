@@ -78,6 +78,7 @@ class EndpointAuthorize:
             "application": config.app_name,
             "endpoint_version": version,
             "source_ip": _remote_addr(environ),
+            "uuid": RequestStore.get_uuid(),
         }
 
         # Basic, not Bearer. This call is to intake, which already holds this
