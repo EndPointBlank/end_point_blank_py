@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.9.0
+
+### Fixed
+
+- **`@authenticated` could never succeed.** `BasicAuthenticate` posted the
+  request method under the key `action`. Intake reads `http_method`: every
+  clause of `AuthorizeAccess.authorize/1` pattern-matches that key, so a body
+  without it falls through to the catch-all and the authorize controller renders
+  401 `invalid_params`. The credential presented never mattered, because the
+  request was rejected before any credential was considered. Any application
+  using the Flask or Django `@authenticated` decorator against a real
+  EndPointBlank was refused on every request; it now reaches the view.
+
+  Two further keys were sent under names intake does not read. Neither failed
+  loudly — they simply wrote nothing:
+
+  | was sent as | is now sent as | what intake does with it | what you saw before |
+  | --- | --- | --- | --- |
+  | `action` | `http_method` | matches the endpoint being called | 401 on every authenticated request |
+  | `version` | `endpoint_version` | records the version, and looks up its deprecation | version recorded as null, and the deprecation lookup asked about no version at all |
+  | `ip_address` | `source_ip` | records `source_ip_address` on the authorization | the client address recorded as null on every authentication |
+
+  The deprecation lookup is worth a caveat. Intake now performs it for an
+  authenticated call, but the `@authenticated` decorators still do not read the
+  `deprecation` block back out of the response the way `@authorized` does, so no
+  `Deprecation` or `Sunset` header appears on an authenticated route yet. That
+  is a separate gap and is unchanged here.
+
+  Nothing else about the call changed. The `ip_address=` keyword argument on
+  `BasicAuthenticate.authenticate` keeps its name — only the name it travels
+  under on the wire is different — and `application`, which intake ignores, is
+  still sent for parity with `EndpointAuthorize`.
+
+  Deployments that were already succeeding are unaffected, because none were:
+  this path returned 401 for every request it ever made. Integrators who worked
+  around it by using `@authorized` in place of `@authenticated` can now use the
+  decorator they meant.
+
+### Changed
+
+- The names intake reads on `POST /api/authorize` are now pinned in one place,
+  `tests/test_intake_param_contract.py`, parametrized over both commands that
+  call that endpoint. `BasicAuthenticate` and `EndpointAuthorize` post the same
+  fields to the same URL but each spelled the body out for itself, which is how
+  one of them came to use three names the other did not. The unit test that
+  should have caught this asserted `body["action"] == "GET"` against a mock and
+  passed for as long as the bug existed — a double agrees with whatever it is
+  handed. `tests/test_authenticate_over_http.py` now drives a real Flask route
+  behind `@authenticated` over a loopback socket into a stub that refuses a
+  body without `http_method` the way intake does.
+
 ## 0.8.0
 
 ### Added

@@ -236,6 +236,21 @@ def handle_refusal(error):
 `UnauthorizedError("message")` still works and defaults to 401; the status is an optional
 second argument.
 
+Both decorators `POST` to the same endpoint, `{base_url}/api/authorize`, and send the same
+fields under the same names. These are the names EndPointBlank reads; anything else in the body
+is ignored:
+
+| field | what it is |
+| --- | --- |
+| `client_auth` | the caller's own `Authorization` header, verbatim — who is calling *you* |
+| `path` | the route being called |
+| `http_method` | the request method. Required: a body without it is refused with `401 invalid_params`, whatever credential it carried |
+| `endpoint_version` | the version `VersionFinder` detected, or `null`. Drives the deprecation lookup behind the `Deprecation` and `Sunset` headers |
+| `source_ip` | the client address, from `X-Forwarded-For` where present and `REMOTE_ADDR` otherwise |
+
+This service's own credential travels in the request's `Authorization` header as Basic, not in
+the body.
+
 Successful authorization results are cached in-process for `cache_ttl` seconds (default 300) to
 avoid a network round trip on every request.
 

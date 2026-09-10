@@ -3,6 +3,12 @@
 integrations. Unlike ``EndpointAuthorize`` it does not cache, so every field it
 sends is sent on every request — a wrong key is a per-request failure, not an
 occasional one.
+
+This file used to assert ``action``, ``version`` and ``ip_address`` — the three
+names intake does not read — and passed, because the only thing it asked was
+whether a mock had been handed what the command built. The names are asserted
+here for the fields' own sake, and the reason they are *those* names lives in
+``tests/test_intake_param_contract.py`` and ``tests/test_authenticate_over_http.py``.
 """
 
 from unittest.mock import MagicMock, patch
@@ -58,10 +64,10 @@ class TestTheRequest:
         body = post.call_args[0][2]
 
         assert body["path"] == "/students/{id}"
-        assert body["action"] == "GET"
+        assert body["http_method"] == "GET"
         assert body["client_auth"] == "Basic Y2xpZW50"
         assert body["application"] == "students-api"
-        assert body["version"] == "1"
+        assert body["endpoint_version"] == "1"
 
     def test_sends_the_route_pattern_rather_than_the_concrete_path(self):
         # Intake matches a registered endpoint row; "/students/5" would match
@@ -75,7 +81,7 @@ class TestTheRequest:
         with patch.object(ba, "post", return_value=response()) as post:
             BasicAuthenticate.authenticate(environ(), "/students", None)
 
-        assert post.call_args[0][2]["version"] is None
+        assert post.call_args[0][2]["endpoint_version"] is None
 
 
 class TestTheClientAddress:
@@ -83,7 +89,7 @@ class TestTheClientAddress:
         with patch.object(ba, "post", return_value=response()) as post:
             BasicAuthenticate.authenticate(environ(), "/students", "1")
 
-        assert post.call_args[0][2]["ip_address"] == "10.0.0.1"
+        assert post.call_args[0][2]["source_ip"] == "10.0.0.1"
 
     def test_prefers_the_first_forwarded_address(self):
         env = environ(HTTP_X_FORWARDED_FOR="203.0.113.7, 10.0.0.1")
@@ -91,7 +97,7 @@ class TestTheClientAddress:
         with patch.object(ba, "post", return_value=response()) as post:
             BasicAuthenticate.authenticate(env, "/students", "1")
 
-        assert post.call_args[0][2]["ip_address"] == "203.0.113.7"
+        assert post.call_args[0][2]["source_ip"] == "203.0.113.7"
 
     def test_an_explicit_override_wins_over_the_environ(self):
         env = environ(HTTP_X_FORWARDED_FOR="203.0.113.7")
@@ -99,7 +105,7 @@ class TestTheClientAddress:
         with patch.object(ba, "post", return_value=response()) as post:
             BasicAuthenticate.authenticate(env, "/students", "1", ip_address="198.51.100.4")
 
-        assert post.call_args[0][2]["ip_address"] == "198.51.100.4"
+        assert post.call_args[0][2]["source_ip"] == "198.51.100.4"
 
     def test_is_null_when_the_environ_carries_no_address(self):
         env = environ()
@@ -108,7 +114,7 @@ class TestTheClientAddress:
         with patch.object(ba, "post", return_value=response()) as post:
             BasicAuthenticate.authenticate(env, "/students", "1")
 
-        assert post.call_args[0][2]["ip_address"] is None
+        assert post.call_args[0][2]["source_ip"] is None
 
 
 class TestTheResult:
