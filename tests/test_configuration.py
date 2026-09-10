@@ -33,6 +33,73 @@ def test_default_cache_ttl():
     assert Configuration().cache_ttl == 300
 
 
+@pytest.mark.parametrize("attr", ["base_url", "log_base_url"])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("https://control.example.com/", "https://control.example.com"),
+        ("https://control.example.com//", "https://control.example.com"),
+        ("https://control.example.com///", "https://control.example.com"),
+    ],
+    ids=["one-slash", "two-slashes", "three-slashes"],
+)
+def test_trailing_slash_is_stripped(attr, raw, expected):
+    config = Configuration()
+    setattr(config, attr, raw)
+    assert getattr(config, attr) == expected
+
+
+def test_trailing_slash_stripped_base_url_builds_correct_urls():
+    config = Configuration()
+    config.base_url = "https://control.example.com/"
+    config.log_base_url = "https://log.example.com/"
+    assert config.authorize_url == "https://control.example.com/api/authorize"
+    assert config.access_token_url == "https://control.example.com/api/access_token"
+    assert config.log_url == "https://log.example.com/api/application_logs"
+
+
+@pytest.mark.parametrize("attr", ["base_url", "log_base_url"])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "https://control.example.com/api",
+        "https://control.example.com/api/",
+        "https://control.example.com/api//",
+    ],
+    ids=["bare", "trailing-slash", "trailing-slashes"],
+)
+def test_api_suffixed_base_url_raises(attr, raw):
+    config = Configuration()
+    setattr(config, attr, raw)
+    with pytest.raises(ValueError) as exc_info:
+        getattr(config, attr)
+    message = str(exc_info.value)
+    assert attr in message
+    assert "/api" in message
+    assert raw in message or raw.rstrip("/") in message
+
+
+def test_api_suffixed_base_url_and_log_base_url_raise_independently():
+    config = Configuration()
+    config.base_url = "https://control.example.com/api"
+    config.log_base_url = "https://log.example.com"
+    # log_base_url is clean, so reading it must not raise even though
+    # base_url (a completely separate setting) is misconfigured.
+    assert config.log_base_url == "https://log.example.com"
+    with pytest.raises(ValueError):
+        config.base_url
+
+
+def test_clean_base_url_is_unaffected():
+    config = Configuration()
+    config.base_url = "https://control.example.com"
+    config.log_base_url = "https://log.example.com"
+    assert config.base_url == "https://control.example.com"
+    assert config.log_base_url == "https://log.example.com"
+    assert config.authorize_url == "https://control.example.com/api/authorize"
+    assert config.log_url == "https://log.example.com/api/application_logs"
+
+
 def test_url_properties():
     config = Configuration()
     config.base_url = "https://control.example.com"
