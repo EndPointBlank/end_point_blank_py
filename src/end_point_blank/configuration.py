@@ -10,6 +10,49 @@ class LogMode(Enum):
     DELAYED = "delayed"
 
 
+# Every request/log URL in this file is built by appending this literal to a
+# configured base URL, e.g. ``f"{self.base_url}/api/authorize"`` below. A base
+# URL that already ends in it cannot be fixed by stripping -- appending
+# ``API_SUFFIX`` again produces ``/api/api/...``, which intake 404s on -- so
+# that case is rejected outright rather than silently mangled.
+API_SUFFIX = "/api"
+
+
+def _normalize_base_url(value: str, setting_name: str) -> str:
+    """
+    Normalize a configured base URL (``base_url`` or ``log_base_url``) at the
+    point it is read.
+
+    A trailing slash is the single most common way to mistype a base URL and
+    is unambiguous to fix -- ``https://in.example.com/`` and
+    ``https://in.example.com`` mean the same origin -- so it is stripped
+    silently here rather than raising. Left unstripped it produces a doubled
+    slash (``.../api`` becomes ``..//api``) that intake 404s on, and that
+    404 is swallowed to a warning by the write path, so the misconfiguration
+    would otherwise never surface (see ``feedback_no_silent_failures``).
+
+    A base URL that already ends in ``API_SUFFIX`` (e.g. someone configured
+    ``https://in.example.com/api``) is a different kind of mistake: there is
+    no normalization that makes it correct, because every URL builder in
+    this file appends ``API_SUFFIX`` again on top of it. That is a
+    configuration error the SDK can and should catch loudly at configure
+    time instead of failing silently on every write forever, so it raises.
+    """
+    stripped = value.rstrip("/")
+    if stripped.endswith(API_SUFFIX):
+        raise ValueError(
+            f"{setting_name} is set to {value!r}, which already ends in "
+            f"{API_SUFFIX!r}. {setting_name} must be the bare origin the "
+            f"API is served from (e.g. 'https://in.endpointblank.com'), not "
+            f"the API path itself -- this SDK builds request URLs by "
+            f"appending '{API_SUFFIX}/...' to {setting_name}, so leaving "
+            f"the suffix in would send requests to "
+            f"'{stripped}{API_SUFFIX}/...'. Remove the trailing "
+            f"{API_SUFFIX!r} from {setting_name}."
+        )
+    return stripped
+
+
 class Configuration:
     """
     Singleton configuration for the EndPointBlank library.
@@ -93,11 +136,12 @@ class Configuration:
 
     @property
     def base_url(self) -> str:
-        return (
+        resolved = (
             self._base_url
             or os.environ.get("ENDPOINTBLANK_BASE_URL")
             or "https://in.endpointblank.com"
         )
+        return _normalize_base_url(resolved, "base_url")
 
     @base_url.setter
     def base_url(self, value: Optional[str]) -> None:
@@ -105,11 +149,12 @@ class Configuration:
 
     @property
     def log_base_url(self) -> str:
-        return (
+        resolved = (
             self._log_base_url
             or os.environ.get("ENDPOINTBLANK_LOG_BASE_URL")
             or "https://log.endpointblank.com"
         )
+        return _normalize_base_url(resolved, "log_base_url")
 
     @log_base_url.setter
     def log_base_url(self, value: Optional[str]) -> None:
