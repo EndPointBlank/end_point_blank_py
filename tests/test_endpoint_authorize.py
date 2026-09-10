@@ -121,6 +121,38 @@ class TestTheAuthorizedPath:
 
         assert post.call_args[0][2]["target_hostname"] == "api.example.com"
 
+    def test_sends_the_current_requests_uuid(self):
+        # The `_clean` fixture already called RequestStore.set({}), which
+        # seeds a fresh uuid for this simulated request. The authorize body
+        # must carry that same uuid so intake's authorizations row can be
+        # joined to the request/response rows written for this call -- a
+        # different string, or none at all, breaks that join silently.
+        expected_uuid = RequestStore.get_uuid()
+        assert expected_uuid
+
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert post.call_args[0][2]["uuid"] == expected_uuid
+
+    def test_different_requests_get_different_uuids(self):
+        # Different routes so the second call is a real authorize, not a
+        # cache hit that would skip `post` (and RequestStore.get_uuid())
+        # entirely.
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+        first_uuid = post.call_args[0][2]["uuid"]
+
+        RequestStore.set({})  # a second, independent simulated request
+
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(environ(), "/teachers", "1")
+        second_uuid = post.call_args[0][2]["uuid"]
+
+        assert first_uuid
+        assert second_uuid
+        assert first_uuid != second_uuid
+
 
 class TestTheCacheKey:
     """Regression cover for the bug the end-to-end run found: the key must vary
