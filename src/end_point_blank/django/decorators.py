@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import functools
 import logging
-import re
 from typing import Callable
 
-logger = logging.getLogger(__name__)
+from ..commands.route_path import normalize_route_pattern
 
-_DJANGO_PARAM_RE = re.compile(r"<(?:[^:>]+:)?([^>]+)>")
+logger = logging.getLogger(__name__)
 
 
 def _route_path(request) -> str:
     """Return the normalized route pattern (e.g. /classes/{class_id}/students)."""
     resolver_match = getattr(request, "resolver_match", None)
     if resolver_match and resolver_match.route:
-        normalized = _DJANGO_PARAM_RE.sub(r"{\1}", resolver_match.route)
-        return "/" + normalized.lstrip("/")
+        return normalize_route_pattern(resolver_match.route)
     return request.path
 
 

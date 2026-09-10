@@ -5,6 +5,8 @@ import json
 import logging
 from typing import Callable
 
+from ._route_path import route_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,7 +35,11 @@ def authenticated(func: Callable) -> Callable:
         from ..unauthorized_error import refusal_from
 
         environ = request.environ
-        path = request.path
+        # The route pattern, not the concrete URL. Intake resolves the endpoint
+        # row by an exact match on path, so "/students/42" resolves to nothing
+        # and the caller is refused for a grant they hold. Shared with
+        # @authorized so the two cannot drift apart again.
+        path = route_path(request)
         version = VersionFinder().find(environ)
 
         response = BasicAuthenticate.authenticate(environ, path, version)
