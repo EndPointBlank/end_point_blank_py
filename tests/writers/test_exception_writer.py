@@ -84,7 +84,17 @@ class TestThePayload:
         payload = write_and_capture(raised())
 
         assert payload["stamped_path"] is None
-        assert payload["uuid"] is None
+
+    def test_mints_its_own_uuid_when_raised_outside_any_request(self):
+        # RequestStore.get_uuid() returns None when there's no request in
+        # flight (e.g. a background job, or an exception before the request
+        # middleware runs). Intake's changeset has `uuid` as a hard-required
+        # field, so sending that None through gets the whole error row
+        # rejected. ExceptionWriter must mint one itself, same as
+        # RequestStore does at the start of a request.
+        payload = write_and_capture(raised())
+
+        assert payload["uuid"] is not None
 
     def test_carries_the_source_application_environment(self):
         RequestStore.set({})

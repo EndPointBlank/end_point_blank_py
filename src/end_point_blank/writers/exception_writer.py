@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import traceback
+import uuid as _uuid_mod
 from datetime import datetime, timezone
 
 from ..configuration import Configuration, LogMode
@@ -10,7 +11,12 @@ from .direct_writer import DirectWriter
 from .delayed_writer import DelayedWriter
 
 # uuid is taken from RequestStore.get_uuid() — same source as RequestWriter and
-# ResponseWriter — so all three rows correlate on the same request.
+# ResponseWriter — so all three rows correlate on the same request. Outside a
+# request (e.g. a background job, or an exception raised before the request
+# middleware runs) there's nothing in RequestStore and get_uuid() returns
+# None. Intake's changeset has `uuid` as a hard-required field, so that None
+# would get the whole error row rejected — mint one here instead, the same
+# way RequestStore itself does at the start of a request.
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +43,7 @@ class ExceptionWriter:
         """Send *exc* details to the EndPointBlank API (fire-and-forget)."""
         try:
             config = Configuration()
-            uuid = RequestStore.get_uuid()
+            uuid = RequestStore.get_uuid() or str(_uuid_mod.uuid4())
             payload = {
                 "app_name": config.app_name,
                 "message": str(exc),
