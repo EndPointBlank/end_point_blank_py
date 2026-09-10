@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import functools
 import logging
-import re
 import time
 from typing import Callable
 
-logger = logging.getLogger(__name__)
+from ._route_path import route_path
 
-_FLASK_PARAM_RE = re.compile(r"<(?:[^:>]+:)?([^>]+)>")
+logger = logging.getLogger(__name__)
 
 
 def authorized(func: Callable) -> Callable:
@@ -37,8 +36,7 @@ def authorized(func: Callable) -> Callable:
 
         t0 = time.monotonic()
         environ = request.environ
-        url_rule = request.url_rule
-        path = _FLASK_PARAM_RE.sub(r"{\1}", str(url_rule)) if url_rule else request.path
+        path = route_path(request)
         logger.debug("[authorized] calling EndpointAuthorize.authorize for %s", path)
 
         response = EndpointAuthorize.authorize(environ, path, version=VersionFinder().find(environ))

@@ -243,13 +243,30 @@ is ignored:
 | field | what it is |
 | --- | --- |
 | `client_auth` | the caller's own `Authorization` header, verbatim — who is calling *you* |
-| `path` | the route being called |
+| `path` | the **route pattern**, not the URL that was called: `/students/{student_id}`, never `/students/42`. See below |
 | `http_method` | the request method. Required: a body without it is refused with `401 invalid_params`, whatever credential it carried |
 | `endpoint_version` | the version `VersionFinder` detected, or `null`. Drives the deprecation lookup behind the `Deprecation` and `Sunset` headers |
 | `source_ip` | the client address, from `X-Forwarded-For` where present and `REMOTE_ADDR` otherwise |
 
 This service's own credential travels in the request's `Authorization` header as Basic, not in
 the body.
+
+#### The `path` is the route pattern
+
+EndPointBlank resolves the endpoint row by matching `path` exactly against what your application
+registered at startup, so the concrete URL matches nothing. Both decorators handle this for you:
+they recover the matched route from Flask's `url_rule` or Django's `resolver_match.route` and
+rewrite it, `<int:student_id>` becoming `{student_id}`, which is the same form
+`register_flask_endpoints` and `register_django_endpoints` publish.
+
+You do not have to do anything for this. It is documented because when it goes wrong the symptom
+is misleading: an unresolvable path is refused as a **grant** failure, so a path problem presents
+as a permissions problem. If a parameterized route is refused while a static one on the same
+credential succeeds, compare the `path` in the decorator's request against the paths your
+registrar published.
+
+When no route matched at all — a 404, or a request context pushed by hand — the decorators fall
+back to the concrete path, since sending that is better than sending nothing.
 
 Successful authorization results are cached in-process for `cache_ttl` seconds (default 300) to
 avoid a network round trip on every request.

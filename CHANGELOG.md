@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.10.0
+
+### Fixed
+
+- **Flask's `@authenticated` sent the URL, not the route.** The decorator sent
+  `request.path` — `/students/42` — where its own `@authorized` sibling, sitting
+  in the next file, recovered the matched rule from Werkzeug and normalized it to
+  `/students/{student_id}`. Django's two decorators already shared one helper and
+  were never affected.
+
+  EndPointBlank resolves the endpoint row before it considers the credential, and
+  `Intake.Apis.get_endpoint/3` matches `path` with SQL `=`. No endpoint is
+  registered under `/students/42`, so the lookup found nothing and the caller was
+  refused — with a **grant** error. A path problem presented as a permissions
+  problem, which is the reason to read this entry even if you thought your
+  credentials were the issue.
+
+  Two things kept it hidden:
+
+  - An application whose routes take no parameters was never affected. With
+    nothing to lose, `/health` and the pattern `/health` are the same string, so
+    the wrong code sent the right value.
+  - Until 0.9.0 the authenticate call was refused earlier, for an unrelated
+    reason: it posted the request method as `action`, and intake answered `401
+    invalid_params` before the path was ever consulted. Fixing that is what let
+    the request reach endpoint resolution, so this is the next thing a Flask
+    integrator meets on a parameterized route.
+
+  If you worked around this by putting `@authorized` on routes you meant to only
+  authenticate, you can now use the decorator you meant.
+
+### Changed
+
+- **One spelling of path normalization, for the whole SDK.** There were two
+  byte-identical copies of the conversion — one in `flask/authorized.py`, one in
+  `django/decorators.py` — and a third site, `flask/authenticated.py`, that
+  needed it and did not have it. They are now a single
+  `commands.route_path.normalize_route_pattern`, with `flask/_route_path.py`
+  holding the one decision Flask has to make that Django does not (recovering the
+  rule from `url_rule`, falling back to the concrete path when nothing matched).
+  Both Flask decorators go through it, so they cannot disagree again without
+  `tests/flask/test_route_path.py` failing.
+
+  This is a refactor with no behavioural change for `@authorized` or for either
+  Django decorator; only Flask's `@authenticated` sends anything different.
+
+- The normalizer's agreement with intake is now pinned rather than assumed.
+  `normalize_route_pattern` emits `{name}`; intake's canonical form is `:name`,
+  and its `Intake.PathNormalizer` rewrites `{name}` on **both** sides — at
+  registration and on the authorize request — so the two spellings meet.
+  `tests/commands/test_route_path.py` transcribes that normalizer and asserts
+  what the SDK emits survives it, including the two negative cases that matter:
+  a raw `<int:id>` passes through intake untouched and matches nothing, and so
+  does a concrete `/students/42`. It also pins what the SDK must **not** do —
+  intake trims no trailing slash and folds no case, so a path this SDK "tidied"
+  would be a path `get_endpoint/3` could never find.
+
 ## 0.9.0
 
 ### Fixed

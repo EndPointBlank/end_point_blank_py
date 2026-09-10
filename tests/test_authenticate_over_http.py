@@ -218,7 +218,9 @@ class TestTheAuthenticatedRoute:
         assert body["client_auth"] == "Basic Y2xpZW50"
         assert body["endpoint_version"] == "1"
         assert body["source_ip"] == "127.0.0.1"
-        assert body["path"] == "/students/5"
+        # The route pattern, not "/students/5". Intake resolves the endpoint row
+        # by an exact match on this, so the concrete URL finds nothing (sc-342).
+        assert body["path"] == "/students/{student_id}"
 
     @pytest.mark.parametrize("key", ["action", "version", "ip_address"])
     def test_intake_receives_none_of_the_names_it_ignores(self, live, key):
