@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid as _uuid_mod
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -10,6 +11,23 @@ from .direct_writer import DirectWriter
 from .delayed_writer import DelayedWriter
 
 logger = logging.getLogger(__name__)
+
+# uuid is taken from RequestStore.get_uuid() — same source as RequestWriter,
+# ResponseWriter, and ExceptionWriter — so all four rows correlate on the same
+# request. This used to read environ["HTTP_X_REQUEST_ID"] directly, which
+# carried the caller's own inbound id instead of the SDK's own uuid, so log
+# rows never joined to the other three streams for one interaction. That is a
+# deliberate trade-off, not an oversight: a customer's own inbound trace id no
+# longer appears on log rows. It never appeared on the other three streams
+# either, so this removes the one outlier rather than making log rows less
+# capable than they used to be. Preserving the caller's id alongside our own,
+# as a second field, is real future work and is out of scope here. See sc-380.
+#
+# Outside a request there's nothing in RequestStore and get_uuid() returns
+# None; mint one instead, the same reasoning ExceptionWriter uses under
+# sc-378 — a log call outside a request (background job, startup) is exactly
+# as possible as an exception one, and application_logs has no required
+# fields to lean on to protect against a None uuid anyway.
 
 
 class LogWriter:
@@ -52,7 +70,7 @@ class LogWriter:
         try:
             config = Configuration()
             environ = RequestStore.get()
-            uuid = environ.get("HTTP_X_REQUEST_ID") if environ else None
+            uuid = RequestStore.get_uuid() or str(_uuid_mod.uuid4())
             payload = {
                 "message": message,
                 "log_level": level,

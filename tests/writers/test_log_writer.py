@@ -78,10 +78,52 @@ class TestThePayload:
         assert payload["stamped_path"] is None
         assert payload["stamped_http_method"] is None
 
-    def test_carries_the_request_id_supplied_by_the_caller(self):
+    def test_correlates_with_the_request_that_produced_it(self):
+        # Same source as RequestWriter/ResponseWriter/ExceptionWriter:
+        # RequestStore.get_uuid(), not a direct read of the inbound header.
+        # The request, response, error and log rows for one interaction are
+        # joined on this uuid; before this fix, log rows carried the header
+        # value directly and the other three carried RequestStore's uuid —
+        # normally the same value here, since RequestStore itself seeds its
+        # uuid from HTTP_X_REQUEST_ID when present, but resolved through a
+        # different path that could silently diverge from what the other
+        # writers send. See sc-380.
         RequestStore.set({"HTTP_X_REQUEST_ID": "req-abc"})
+        expected = RequestStore.get_uuid()
 
-        assert write_and_capture(LogWriter.info, "hi")["uuid"] == "req-abc"
+        assert write_and_capture(LogWriter.info, "hi")["uuid"] == expected
+
+    def test_is_given_a_uuid_even_without_a_request_id_header(self):
+        RequestStore.set({})
+
+        assert write_and_capture(LogWriter.info, "hi")["uuid"] is not None
+
+    def test_ignores_a_header_mutated_after_the_request_uuid_was_resolved(self):
+        # Proves the source really changed, not just that the two happen to
+        # agree when a header is present at RequestStore.set() time (which
+        # they normally do, since RequestStore itself seeds its uuid from the
+        # header then). Mutate the header in the environ afterwards, the way
+        # a proxy or an earlier middleware might: the old code read
+        # HTTP_X_REQUEST_ID directly and would have picked this up; the fixed
+        # code reads the already-resolved RequestStore uuid and does not.
+        environ = {"HTTP_X_REQUEST_ID": "req-abc"}
+        RequestStore.set(environ)
+        resolved = RequestStore.get_uuid()
+        environ["HTTP_X_REQUEST_ID"] = "req-mutated-after-resolution"
+
+        assert write_and_capture(LogWriter.info, "hi")["uuid"] == resolved
+
+    def test_mints_its_own_uuid_when_logged_outside_any_request(self):
+        # RequestStore.get_uuid() returns None when there's no request in
+        # flight (e.g. a background job, or a log line at startup).
+        # application_logs has no required fields, so a None uuid would not
+        # get the row rejected the way it would for ExceptionWriter — but a
+        # log call outside a request is exactly as possible as an exception
+        # one, and a minted id lets that row be told apart from every other
+        # log line minted outside a request, where a shared None would not.
+        payload = write_and_capture(LogWriter.info, "startup complete")
+
+        assert payload["uuid"] is not None
 
     def test_carries_the_source_application_environment(self):
         RequestStore.set({})
