@@ -149,10 +149,6 @@ class Configuration:
         return f"{self.base_url}/api/authorize"
 
     @property
-    def endpoint_error_url(self) -> str:
-        return f"{self.base_url}/api/endpoint_errors"
-
-    @property
     def application_errors_url(self) -> str:
         return f"{self.log_base_url}/api/application_errors"
 

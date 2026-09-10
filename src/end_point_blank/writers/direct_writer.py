@@ -11,7 +11,6 @@ logger = logging.getLogger(__name__)
 
 _URL_KEYS = {
     "application_errors_url": lambda c: c.application_errors_url,
-    "endpoint_error_url": lambda c: c.endpoint_error_url,
     "log_url": lambda c: c.log_url,
     "requests_url": lambda c: c.requests_url,
     "responses_url": lambda c: c.responses_url,

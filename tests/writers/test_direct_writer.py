@@ -39,7 +39,6 @@ class TestUrlResolution:
         "url_key, expected",
         [
             ("application_errors_url", "https://log.test/api/application_errors"),
-            ("endpoint_error_url", "https://intake.test/api/endpoint_errors"),
             ("log_url", "https://log.test/api/application_logs"),
             ("requests_url", "https://log.test/api/application_requests"),
             ("responses_url", "https://log.test/api/application_responses"),

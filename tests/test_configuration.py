@@ -46,7 +46,6 @@ def test_url_properties():
     assert config.access_token_url == "https://control.example.com/api/access_token"
     assert config.authorize_url == "https://control.example.com/api/authorize"
     assert config.endpoint_update_url == "https://control.example.com/api/application_updates"
-    assert config.endpoint_error_url == "https://control.example.com/api/endpoint_errors"
 
 
 def test_configure_sets_values():
