@@ -47,13 +47,18 @@ class BasicAuthenticate:
             method, path_info, client_auth,
         )
 
+        # These are the names intake reads on POST /api/authorize, and the same
+        # ones EndpointAuthorize sends to that same URL. http_method is not
+        # optional: every clause of AuthorizeAccess.authorize/1 pattern-matches
+        # it, so a body without it is answered 401 invalid_params no matter what
+        # credential it carried.
         body: Dict[str, Any] = {
             "path": path,
-            "action": method,
+            "http_method": method,
             "client_auth": client_auth,
             "application": config.app_name,
-            "version": version,
-            "ip_address": ip_address or _remote_addr(environ),
+            "endpoint_version": version,
+            "source_ip": ip_address or _remote_addr(environ),
         }
 
         response = post(config.authorize_url, Authorization.header(), body)
