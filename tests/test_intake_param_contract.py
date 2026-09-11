@@ -36,6 +36,7 @@ import pytest
 from end_point_blank.commands.authentication_cache import AuthenticationCache
 from end_point_blank.configuration import Configuration
 from end_point_blank.request_store import RequestStore
+from tests.intake_authorize import granted
 
 # What intake actually reads on POST /api/authorize. Every other key in the body
 # is ignored:
@@ -75,7 +76,7 @@ def _accepted():
     response = MagicMock()
     response.status_code = 201
     response.text = ""
-    response.json.return_value = {"authorized": True, "data": []}
+    response.json.return_value = granted()
     return response
 
 

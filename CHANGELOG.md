@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Errors, logs and responses name their caller again (sc-473).**
+  `EndpointAuthorize` read only `deprecation` from intake's `201`. The caller's
+  source application environment, which intake sends as
+  `data[0].source_application_environment_id`, was never read, and nothing
+  called `RequestStore.set_source_application_environment_id`. So every
+  response, log and error row this SDK wrote sent
+  `source_application_environment_id: null`, and EndPointBlank's error page
+  showed "—" as the Client of every error it reported. `@authorized` now reads
+  the id, in Flask and Django, and stores it on the request. The id is cached
+  with the deprecation block, so a cached authorization names the caller too.
+  A `201` that carries no id still authorizes the request, but logs an error
+  instead of passing silently. This follows the Elixir SDK's fix (sc-463) and
+  reads the key the Rails SDK reads.
+
 ## 0.10.0
 
 ### Fixed

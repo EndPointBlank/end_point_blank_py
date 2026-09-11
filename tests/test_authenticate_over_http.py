@@ -46,6 +46,7 @@ from end_point_blank.configuration import Configuration
 from end_point_blank.flask import authenticated
 from end_point_blank.request_store import RequestStore
 from end_point_blank.unauthorized_error import UnauthorizedError
+from tests.intake_authorize import granted
 
 # The exact body master built, key for key. Kept whole rather than reduced to
 # the three names that changed, so the stub is shown accepting or refusing a
@@ -73,7 +74,7 @@ class StubIntake(BaseHTTPRequestHandler):
         if "http_method" not in payload:
             self._send(401, {"authorized": False, "error": "invalid_params"})
         else:
-            self._send(201, {"authorized": True, "data": [{"id": "acc-1"}]})
+            self._send(201, granted())
 
     def _send(self, status, payload):
         body = json.dumps(payload).encode()

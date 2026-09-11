@@ -52,6 +52,7 @@ from end_point_blank.configuration import Configuration
 from end_point_blank.flask import authenticated, register_flask_endpoints
 from end_point_blank.request_store import RequestStore
 from end_point_blank.unauthorized_error import UnauthorizedError
+from tests.intake_authorize import granted
 
 # Intake's Intake.PathNormalizer, transcribed from
 # intake/lib/intake/path_normalizer.ex. Canonical form is ":name". It rewrites
@@ -93,7 +94,7 @@ class StubIntake(BaseHTTPRequestHandler):
         if key not in self.server.endpoints:
             return self._send(403, {"authorized": False, "error": "access_denied"})
 
-        return self._send(201, {"authorized": True, "data": [{"id": "acc-1"}]})
+        return self._send(201, granted())
 
     def _send(self, status, payload):
         body = json.dumps(payload).encode()
