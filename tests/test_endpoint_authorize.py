@@ -4,10 +4,17 @@ tested. It authenticates to intake, caches, and it decides whether a request is
 allowed to proceed — and both bugs found during the RFC header work lived here.
 
 These cover the whole surface: the cache (hit, miss, key composition), the
-credential it presents, every response class, and the deprecation extraction.
+credential it presents, every response class, the deprecation extraction, and
+the caller's source environment.
+
+Every granted response here is intake's real 201 body, from
+``tests/intake_authorize.py``. This file used to answer ``{"authorized": True}``,
+which carries no grant at all -- so nothing here could notice that the SDK never
+read one.
 """
 
 import base64
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +25,7 @@ from end_point_blank.commands.endpoint_authorize import EndpointAuthorize, _Cach
 from end_point_blank.configuration import Configuration
 from end_point_blank.request_store import RequestStore
 from end_point_blank.tokens.access_tokens import AccessTokens
+from tests.intake_authorize import SOURCE_ENVIRONMENT_ID, granted
 
 GENERATOR = "end_point_blank.commands.generate_access_token.GenerateAccessToken.token"
 
@@ -37,7 +45,7 @@ def response(status=201, payload=None, text=""):
     resp = MagicMock()
     resp.status_code = status
     resp.text = text
-    resp.json.return_value = payload if payload is not None else {"authorized": True}
+    resp.json.return_value = payload if payload is not None else granted()
     return resp
 
 
@@ -160,7 +168,7 @@ class TestTheCacheKey:
     route share one answer."""
 
     def test_a_different_version_is_a_different_entry(self):
-        deprecated = response(payload={"deprecation": {"deprecated_at": "2026-01-01T00:00:00Z"}})
+        deprecated = response(payload=granted(deprecation={"deprecated_at": "2026-01-01T00:00:00Z"}))
 
         with patch.object(ea, "post", return_value=deprecated):
             EndpointAuthorize.authorize(environ(), "/students", "1")
@@ -194,7 +202,7 @@ class TestDeprecation:
     def test_stores_the_block_when_present(self):
         block = {"deprecated_at": "2026-01-01T00:00:00Z", "sunset_at": "2026-11-11T11:11:11Z"}
 
-        with patch.object(ea, "post", return_value=response(payload={"deprecation": block})):
+        with patch.object(ea, "post", return_value=response(payload=granted(deprecation=block))):
             EndpointAuthorize.authorize(environ(), "/students", "1")
 
         assert RequestStore.get_deprecation() == block
@@ -210,7 +218,7 @@ class TestDeprecation:
         # one request in N, which reads as flaky rather than missing.
         block = {"deprecated_at": "2026-01-01T00:00:00Z"}
 
-        with patch.object(ea, "post", return_value=response(payload={"deprecation": block})):
+        with patch.object(ea, "post", return_value=response(payload=granted(deprecation=block))):
             EndpointAuthorize.authorize(environ(), "/students", "1")
 
         RequestStore.set({})  # a fresh request
@@ -222,7 +230,13 @@ class TestDeprecation:
         assert RequestStore.get_deprecation() == block
 
     @pytest.mark.parametrize(
-        "payload", [{"deprecation": None}, {"deprecation": "nonsense"}, {"deprecation": []}, {}, None]
+        "payload",
+        [
+            {**granted(), "deprecation": None},
+            {**granted(), "deprecation": "nonsense"},
+            {**granted(), "deprecation": []},
+            granted(),
+        ],
     )
     def test_ignores_a_block_that_is_not_a_mapping(self, payload):
         with patch.object(ea, "post", return_value=response(payload=payload)):
@@ -238,6 +252,115 @@ class TestDeprecation:
             EndpointAuthorize.authorize(environ(), "/students", "1")
 
         assert RequestStore.get_deprecation() is None
+
+
+class TestTheCallersSourceEnvironment:
+    """The application environment intake resolved for the *calling* service.
+
+    The response, log and error writers stamp it on every row for this request.
+    Intake maps it to the portal's environment, and the portal's error page
+    renders that as the error's "Client" row. This SDK read it from nowhere, so
+    every row carried null and that row read "—" for every error it reported
+    (sc-473).
+    """
+
+    def test_a_cache_miss_records_it(self):
+        with patch.object(ea, "post", return_value=response()):
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert RequestStore.get_source_application_environment_id() == SOURCE_ENVIRONMENT_ID
+
+    def test_a_cache_hit_records_it_too(self):
+        # The cache held only the deprecation block. Without the id beside it, a
+        # fix would name the caller on one request in N -- the cache misses --
+        # and read as flaky rather than missing.
+        with patch.object(ea, "post", return_value=response()):
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        RequestStore.set({})  # a fresh request, which has recorded nothing yet
+        assert RequestStore.get_source_application_environment_id() is None
+
+        with patch.object(ea, "post") as post:
+            result = EndpointAuthorize.authorize(environ(), "/students", "1")
+            post.assert_not_called()
+
+        assert result.status_code == 201
+        assert RequestStore.get_source_application_environment_id() == SOURCE_ENVIRONMENT_ID
+
+    def test_each_cached_decision_names_its_own_caller(self):
+        # Two callers of one route are two entries. A hit hands back the id its
+        # own authorization named, never whichever was seen last.
+        first = environ(HTTP_AUTHORIZATION="Basic Zmlyc3Q=")
+        second = environ(HTTP_AUTHORIZATION="Basic c2Vjb25k")
+
+        with patch.object(ea, "post", return_value=response(payload=granted("env-first"))):
+            EndpointAuthorize.authorize(first, "/students", "1")
+        with patch.object(ea, "post", return_value=response(payload=granted("env-second"))):
+            EndpointAuthorize.authorize(second, "/students", "1")
+
+        with patch.object(ea, "post") as post:
+            RequestStore.set({})
+            EndpointAuthorize.authorize(first, "/students", "1")
+            assert RequestStore.get_source_application_environment_id() == "env-first"
+
+            RequestStore.set({})
+            EndpointAuthorize.authorize(second, "/students", "1")
+            assert RequestStore.get_source_application_environment_id() == "env-second"
+
+            post.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"authorized": True, "data": []},
+            {"authorized": True},
+            granted(source_application_environment_id=None),
+            {"authorized": True, "data": [{"id": "gen-1"}]},
+            {"authorized": True, "data": "nonsense"},
+            # The key the Elixir SDK read until sc-463. Intake has never sent it,
+            # so it is no more a grant here than an empty body is.
+            {"authorized": True, "accesses": [{"source_application_environment_id": "env-x"}]},
+        ],
+        ids=["empty-data", "no-data", "null-id", "no-id", "data-not-a-list", "accesses-key"],
+    )
+    def test_a_grant_that_names_no_caller_still_authorizes_but_says_so(self, payload, caplog):
+        # Intake refuses (401) any caller whose credential has no application
+        # environment, so a 201 without the id means the response contract
+        # moved -- which is what this bug was, silently. Refusing would turn a
+        # reporting defect into an outage of legitimate traffic, so the call
+        # proceeds. It must not pass for success.
+        with caplog.at_level(logging.ERROR, logger=ea.__name__):
+            with patch.object(ea, "post", return_value=response(payload=payload)):
+                result = EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert result.status_code == 201
+        assert RequestStore.get_source_application_environment_id() is None
+        assert [r.levelno for r in caplog.records] == [logging.ERROR]
+        assert "source_application_environment_id" in caplog.records[0].getMessage()
+
+    def test_a_grant_whose_body_is_not_json_says_so_too(self, caplog):
+        resp = response()
+        resp.json.side_effect = ValueError("not json")
+
+        with caplog.at_level(logging.ERROR, logger=ea.__name__):
+            with patch.object(ea, "post", return_value=resp):
+                result = EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert result.status_code == 201
+        assert RequestStore.get_source_application_environment_id() is None
+        assert "source_application_environment_id" in caplog.text
+
+    def test_a_refusal_records_no_caller_and_raises_no_alarm_about_one(self, caplog):
+        # A refusal carries no grant and was never going to. It is logged as the
+        # refusal it is; a second error claiming a missing id would be noise.
+        refused = response(403, payload={"authorized": False, "error": "access_denied"})
+
+        with caplog.at_level(logging.ERROR, logger=ea.__name__):
+            with patch.object(ea, "post", return_value=refused):
+                EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert RequestStore.get_source_application_environment_id() is None
+        assert "source_application_environment_id" not in caplog.text
 
 
 class TestTheCredentialItPresents:

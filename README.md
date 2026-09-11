@@ -271,6 +271,14 @@ back to the concrete path, since sending that is better than sending nothing.
 Successful authorization results are cached in-process for `cache_ttl` seconds (default 300) to
 avoid a network round trip on every request.
 
+A grant also names the service that called you. `@authorized` reads
+`data[0].source_application_environment_id` from EndPointBlank's `201` and stores it on the
+request, and the response, log and error rows written for that request carry it. That is what
+lets EndPointBlank show which client an error came from. The id is cached with the rest of the
+result, so a cached request is named too. A `201` that carries no id still reaches your view, but
+the SDK logs an error, once per uncached authorization, instead of recording the request as if
+it had no caller.
+
 ### Error, request/response, and log reporting
 
 `ReportInteractionMiddleware` (WSGI) or its Django equivalent automatically:

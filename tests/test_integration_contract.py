@@ -25,13 +25,21 @@ What belongs here is anything a *provider* would expect to be true no matter
 which framework they happened to pick.
 """
 
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from unittest.mock import patch
 
 import pytest
 
+from end_point_blank.commands.authentication_cache import AuthenticationCache
+from end_point_blank.configuration import Configuration
 from end_point_blank.request_store import RequestStore
 from end_point_blank.unauthorized_error import UnauthorizedError
+from end_point_blank.writers.exception_writer import ExceptionWriter
+from end_point_blank.writers.log_writer import LogWriter
+from tests.intake_authorize import SOURCE_ENVIRONMENT_ID, granted
 
 DEPRECATION = {"deprecated_at": "2026-01-01T00:00:00Z", "sunset_at": "2026-11-11T11:11:11Z"}
 EXPECTED_DEPRECATION = "@1767225600"
@@ -117,6 +125,29 @@ class WsgiIntegration:
 
         return response_writer.write.call_args.kwargs["status"]
 
+    def serve_authorized(self, view):
+        """One request through the middleware and Flask's real ``@authorized``,
+        running *view* inside the route. The writers are real; only where their
+        rows go is not (see ``reported``)."""
+        from flask import Flask
+
+        from end_point_blank.flask import authorized
+        from end_point_blank.middleware.report_interaction import ReportInteractionMiddleware
+
+        app = Flask("provider")
+        # So an unhandled error reaches the middleware, as it does under Django.
+        # Flask otherwise renders it as a 500 inside its own wsgi_app.
+        app.config["PROPAGATE_EXCEPTIONS"] = True
+
+        @app.route("/students")
+        @authorized
+        def students():
+            view()
+            return {"ok": True}
+
+        app.wsgi_app = ReportInteractionMiddleware(app.wsgi_app)
+        app.test_client().get("/students", headers={"Authorization": "Basic Y2xpZW50"})
+
 
 class DjangoIntegration:
     """The Django middleware."""
@@ -164,6 +195,23 @@ class DjangoIntegration:
                 ReportInteractionMiddleware(get_response)(RequestFactory().get("/students"))
 
         return response_writer.write.call_args.kwargs["status"]
+
+    def serve_authorized(self, view):
+        """One request through the middleware and Django's real ``@authorized``,
+        running *view* inside the view function."""
+        from django.http import HttpResponse
+        from django.test import RequestFactory
+
+        from end_point_blank.django import authorized
+        from end_point_blank.django.middleware import ReportInteractionMiddleware
+
+        @authorized
+        def students(_request):
+            view()
+            return HttpResponse('{"ok":true}', content_type="application/json")
+
+        request = RequestFactory().get("/students", HTTP_AUTHORIZATION="Basic Y2xpZW50")
+        ReportInteractionMiddleware(students)(request)
 
 
 INTEGRATIONS = [
@@ -274,3 +322,132 @@ class TestRefusalContract:
         # Intake rejects a response row with a null status, so a refusal
         # recorded as None is a row that silently never lands at all.
         assert integration.refuse(UnauthorizedError("denied", 403)) is not None
+
+
+class _Reported:
+    """A stub intake on loopback, and the rows this SDK's writers produced."""
+
+    def __init__(self):
+        self.authorize_calls = []
+        self.rows = {}
+
+    def of(self, stream):
+        return self.rows.get(stream, [])
+
+    def callers_on(self, stream):
+        return [row["source_application_environment_id"] for row in self.of(stream)]
+
+
+@pytest.fixture
+def reported(monkeypatch):
+    """``@authorized`` makes its real HTTP call, to a stub intake on loopback
+    that answers with intake's real 201 body; the four writers build their real
+    payloads, which are collected per stream instead of sent."""
+    for key in ("ENDPOINTBLANK_BASE_URL", "ENDPOINTBLANK_APP_NAME"):
+        monkeypatch.delenv(key, raising=False)
+
+    result = _Reported()
+
+    class Intake(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's name
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            result.authorize_calls.append(self.path)
+            body = json.dumps(granted()).encode()
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            """Silence the default stderr access log."""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Intake)
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    class Collect:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def write(self, payloads):
+            result.rows.setdefault(self.stream, []).extend(payloads)
+
+    for stream in ("request", "response", "log", "exception"):
+        monkeypatch.setattr(
+            f"end_point_blank.writers.{stream}_writer._writer",
+            lambda stream=stream: Collect(stream),
+        )
+
+    config = Configuration()
+    config._init_defaults()
+    config.base_url = f"http://127.0.0.1:{server.server_port}"
+    config.app_name = "students-api"
+    config.client_id = "provider-id"
+    config.client_secret = "provider-secret"
+    AuthenticationCache().clear()
+
+    try:
+        yield result
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        AuthenticationCache().clear()
+        config._init_defaults()
+
+
+@pytest.mark.parametrize("integration", INTEGRATIONS)
+class TestTheCallerIsNamedOnWhatIsReported:
+    """Every response, log and error row for an authorized request names the
+    calling service's application environment.
+
+    Intake maps that id to the portal's environment, and the portal's error
+    page renders it as the error's "Client". Recording it in the command is not
+    the same as it reaching a row: the id has to be set where the writers read
+    it, for the request they are writing about, in every integration. So this
+    goes through the real middleware, the real decorator and the real writers,
+    and asserts on the payloads (sc-473).
+    """
+
+    def test_the_response_log_and_error_rows_name_the_caller(self, integration, reported):
+        def view():
+            LogWriter.info("listed the students")
+            ExceptionWriter.write(RuntimeError("handled here, and reported by hand"))
+
+        integration.serve_authorized(view)
+
+        assert reported.authorize_calls == ["/api/authorize"]
+        assert reported.callers_on("response") == [SOURCE_ENVIRONMENT_ID]
+        assert reported.callers_on("log") == [SOURCE_ENVIRONMENT_ID]
+        assert reported.callers_on("exception") == [SOURCE_ENVIRONMENT_ID]
+
+    def test_an_error_the_middleware_reports_names_the_caller(self, integration, reported):
+        def view():
+            raise RuntimeError("unhandled")
+
+        with pytest.raises(RuntimeError, match="unhandled"):
+            integration.serve_authorized(view)
+
+        assert reported.callers_on("exception") == [SOURCE_ENVIRONMENT_ID]
+        assert reported.callers_on("response") == [SOURCE_ENVIRONMENT_ID]
+
+    def test_a_request_authorized_from_the_cache_names_the_caller_too(self, integration, reported):
+        integration.serve_authorized(lambda: None)
+        reported.rows.clear()
+
+        integration.serve_authorized(lambda: LogWriter.info("listed the students again"))
+
+        assert reported.authorize_calls == ["/api/authorize"], "the second request is a cache hit"
+        assert reported.callers_on("response") == [SOURCE_ENVIRONMENT_ID]
+        assert reported.callers_on("log") == [SOURCE_ENVIRONMENT_ID]
+
+    def test_the_caller_does_not_outlive_the_request(self, integration, reported):
+        # Servers reuse threads. A report written after the request -- a
+        # background job on the same thread -- must not name its caller.
+        integration.serve_authorized(lambda: None)
+
+        LogWriter.info("after the request")
+
+        assert reported.callers_on("log") == [None]
