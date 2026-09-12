@@ -7,6 +7,7 @@ import requests as req_lib
 
 from ..authorization import Authorization
 from ..configuration import Configuration
+from ..request_store import RequestStore
 from ._http import post
 from .endpoint_authorize import _remote_addr
 
@@ -66,6 +67,35 @@ class BasicAuthenticate:
             return None
 
         logger.info("Authentication response: %s - %s", response.status_code, response.text)
+        if response.status_code == 201:
+            RequestStore.set_source_application_environment_id(_source_environment_id_from(response))
         if response.status_code > 299:
             logger.error("Authentication failed: %s - %s", response.status_code, response.text)
         return response
+
+
+def _source_environment_id_from(response) -> Optional[str]:
+    try:
+        payload = response.json()
+    except Exception as exc:
+        logger.error(
+            "Authenticated, but the authorize response has no "
+            "data[0].source_application_environment_id, so this request's responses, "
+            "logs and errors will not name their caller: %s",
+            exc,
+        )
+        return None
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    first = data[0] if isinstance(data, list) and data else None
+    found = first.get("source_application_environment_id") if isinstance(first, dict) else None
+    if isinstance(found, str) and found:
+        return found
+
+    logger.error(
+        "Authenticated, but the authorize response has no "
+        "data[0].source_application_environment_id, so this request's responses, "
+        "logs and errors will not name their caller: body=%s",
+        payload,
+    )
+    return None
