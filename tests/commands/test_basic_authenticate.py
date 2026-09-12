@@ -18,6 +18,7 @@ import pytest
 from end_point_blank.commands import basic_authenticate as ba
 from end_point_blank.commands.basic_authenticate import BasicAuthenticate
 from end_point_blank.configuration import Configuration
+from end_point_blank.request_store import RequestStore
 
 
 def environ(**overrides):
@@ -31,10 +32,14 @@ def environ(**overrides):
     return base
 
 
-def response(status=201, text=""):
+def response(status=201, text="", payload=None):
     resp = MagicMock()
     resp.status_code = status
     resp.text = text
+    if payload is not None:
+        resp.json.return_value = payload
+    else:
+        resp.json.side_effect = ValueError("not json")
     return resp
 
 
@@ -118,6 +123,21 @@ class TestTheClientAddress:
 
 
 class TestTheResult:
+    def test_records_the_granted_source_environment_for_the_current_request(self):
+        env = environ()
+        grant = response(
+            payload={"data": [{"source_application_environment_id": "source-env-123"}]}
+        )
+
+        RequestStore.set(env)
+        try:
+            with patch.object(ba, "post", return_value=grant):
+                BasicAuthenticate.authenticate(env, "/students", "1")
+
+            assert RequestStore.get_source_application_environment_id() == "source-env-123"
+        finally:
+            RequestStore.clear()
+
     def test_returns_the_response_on_success(self):
         with patch.object(ba, "post", return_value=response(201)) as post:
             result = BasicAuthenticate.authenticate(environ(), "/students", "1")
