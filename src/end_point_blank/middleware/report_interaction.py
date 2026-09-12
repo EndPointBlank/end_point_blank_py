@@ -13,6 +13,41 @@ from ..writers.response_writer import ResponseWriter
 
 logger = logging.getLogger(__name__)
 
+_FLASK_EXCEPTION_REPORTED_KEY = "end_point_blank.flask_exception_reported"
+
+
+def _report_flask_exception(_sender: Any, exception: Exception, **_extra: Any) -> None:
+    """Report Flask exceptions that Flask converts into a normal 500 response.
+
+    The WSGI middleware only sees the exception when Flask is configured to
+    propagate it. The signal fires before Flask handles it, while RequestStore
+    still points at the current request, so it covers Flask's default production
+    behavior too.
+    """
+    environ = RequestStore.get()
+    if environ is None or isinstance(exception, UnauthorizedError):
+        return
+    if environ.get(_FLASK_EXCEPTION_REPORTED_KEY):
+        return
+
+    ExceptionWriter.write(exception)
+    environ[_FLASK_EXCEPTION_REPORTED_KEY] = True
+
+
+try:
+    from flask import got_request_exception
+
+    got_request_exception.connect(_report_flask_exception, weak=False)
+except ImportError:
+    # Flask is an optional dependency; the middleware remains a plain WSGI
+    # integration when it is not installed.
+    pass
+
+
+def _flask_exception_was_reported() -> bool:
+    environ = RequestStore.get()
+    return bool(environ and environ.get(_FLASK_EXCEPTION_REPORTED_KEY))
+
 
 class ReportInteractionMiddleware:
     """
@@ -101,7 +136,8 @@ class ReportInteractionMiddleware:
                 status_holder[0] = exc.status_code
             raise
         except Exception as exc:
-            ExceptionWriter.write(exc)
+            if not _flask_exception_was_reported():
+                ExceptionWriter.write(exc)
             raise
         finally:
             logger.debug("[middleware] calling ResponseWriter.write (%.3fs)", time.monotonic() - t0)
