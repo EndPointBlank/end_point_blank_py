@@ -27,26 +27,57 @@ def _report_flask_exception(_sender: Any, exception: Exception, **_extra: Any) -
     environ = RequestStore.get()
     if environ is None or isinstance(exception, UnauthorizedError):
         return
-    if environ.get(_FLASK_EXCEPTION_REPORTED_KEY):
+    # Keyed on the identity of the exception that was reported, not a bare
+    # "something was reported this request" flag. A custom error handler
+    # invoked for *this* exception can itself raise a different exception,
+    # which Flask does not route back through this signal — it propagates
+    # straight out to the WSGI layer below. A boolean flag would make
+    # _flask_exception_was_reported() true for that second, distinct
+    # exception and silently drop it, even though it is the one that
+    # actually reached the client. Storing id(exception) means the guard
+    # only ever suppresses a genuine re-delivery of this same exception
+    # object — cheap, and avoids keeping the exception (and its traceback)
+    # alive in the environ for the rest of the request.
+    if environ.get(_FLASK_EXCEPTION_REPORTED_KEY) == id(exception):
         return
 
     ExceptionWriter.write(exception)
-    environ[_FLASK_EXCEPTION_REPORTED_KEY] = True
+    environ[_FLASK_EXCEPTION_REPORTED_KEY] = id(exception)
 
 
-try:
-    from flask import got_request_exception
+def _connect_flask_signal() -> None:
+    """Best-effort subscribe to Flask's ``got_request_exception`` signal.
 
-    got_request_exception.connect(_report_flask_exception, weak=False)
-except ImportError:
-    # Flask is an optional dependency; the middleware remains a plain WSGI
-    # integration when it is not installed.
-    pass
+    No-ops (leaving the middleware a plain WSGI integration) in two distinct
+    failure modes:
+
+    * Flask is not installed at all — ``ImportError`` on the import below.
+    * Flask *is* installed but older than 2.3 without blinker present. The
+      import above still succeeds — ``got_request_exception`` exists as a
+      no-op fake signal — but calling ``.connect()`` on it raises
+      ``RuntimeError("Signalling support is unavailable because the blinker
+      library is not installed.")``.
+
+    flask is not a base dependency of this package (it is only pulled in,
+    at ``>=2.3``, by the optional ``flask`` extra), so nothing stops a host
+    from pairing this SDK with an older Flask without blinker; importing
+    this module must not crash that host's boot over a feature it may not
+    even use.
+    """
+    try:
+        from flask import got_request_exception
+
+        got_request_exception.connect(_report_flask_exception, weak=False)
+    except (ImportError, RuntimeError):
+        pass
 
 
-def _flask_exception_was_reported() -> bool:
+_connect_flask_signal()
+
+
+def _flask_exception_was_reported(exception: BaseException) -> bool:
     environ = RequestStore.get()
-    return bool(environ and environ.get(_FLASK_EXCEPTION_REPORTED_KEY))
+    return bool(environ) and environ.get(_FLASK_EXCEPTION_REPORTED_KEY) == id(exception)
 
 
 class ReportInteractionMiddleware:
@@ -136,7 +167,7 @@ class ReportInteractionMiddleware:
                 status_holder[0] = exc.status_code
             raise
         except Exception as exc:
-            if not _flask_exception_was_reported():
+            if not _flask_exception_was_reported(exc):
                 ExceptionWriter.write(exc)
             raise
         finally:
