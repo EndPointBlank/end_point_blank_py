@@ -81,6 +81,51 @@ def test_clears_store_even_after_exception():
     assert RequestStore.get() is None
 
 
+def test_does_not_crash_when_an_inner_middleware_instance_clears_the_store_first():
+    """``ReportInteractionMiddleware`` is documented for wrapping a single WSGI
+    app, but nothing stops a composed app -- one whose view calls a second,
+    independently-wrapped WSGI/Flask app's ``wsgi_app`` and lets its exception
+    propagate up through both layers. That is the same "composed apps"
+    scenario the ``id(exception)`` dedup guard's own docstring, and the Flask
+    signal's identity-dedup regression test in
+    ``test_flask_exception_reporting.py``, were written to cover -- just one
+    level further out, at the plain-WSGI ``__call__`` layer instead of the
+    Flask signal.
+
+    Both ``ReportInteractionMiddleware`` instances share the same
+    ``RequestStore`` thread-local. The *inner* instance's own
+    ``finally: RequestStore.clear()`` runs, on exception unwind, before the
+    exception reaches the *outer* instance's ``except Exception`` handler --
+    so by the time the outer instance calls
+    ``_flask_exception_was_reported(exc)``, ``RequestStore.get()`` is already
+    ``None``. Without the ``bool(environ)`` half of that function's guard
+    (``bool(environ) and environ.get(...) == id(exception)``),
+    ``environ.get(...)`` raises
+    ``AttributeError: 'NoneType' object has no attribute 'get'`` from inside
+    the outer middleware's own exception handler -- replacing the real
+    ``RuntimeError`` (and silently losing its report) with an unrelated
+    crash.
+
+    Deleting ``bool(environ) and`` from ``_flask_exception_was_reported``
+    leaves the rest of this suite green -- nothing else calls it with the
+    store already cleared -- so this is the missing regression test for it.
+    """
+
+    def inner_app(environ, start_response):
+        raise RuntimeError("boom from inner")
+
+    inner = ReportInteractionMiddleware(inner_app)
+
+    def outer_app(environ, start_response):
+        list(inner(make_environ(), start_response))
+
+    outer = ReportInteractionMiddleware(outer_app)
+
+    with patch("end_point_blank.middleware.report_interaction.ExceptionWriter.write"):
+        with pytest.raises(RuntimeError, match="boom from inner"):
+            list(outer(make_environ(), lambda s, h: None))
+
+
 def test_a_refusal_records_the_status_that_refused():
     # The WSGI middleware never sees start_response when a refusal propagates,
     # so the response row went to intake with a null status. The refusing status
