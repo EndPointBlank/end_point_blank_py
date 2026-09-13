@@ -6,6 +6,7 @@ from flask import Flask
 
 from end_point_blank.middleware import report_interaction
 from end_point_blank.middleware.report_interaction import ReportInteractionMiddleware
+from end_point_blank.request_store import RequestStore
 
 
 def app_with_exception(propagate_exceptions):
@@ -97,6 +98,45 @@ def test_does_not_report_the_same_exception_twice_when_flask_propagates_it():
 
     write.assert_called_once()
     assert str(write.call_args.args[0]) == "view failed"
+
+
+def test_does_not_report_the_same_exception_object_delivered_twice_through_the_signal():
+    """``got_request_exception`` is a single Blinker signal shared by every
+    Flask app instance in the process, not scoped per-app or per-request.
+    Flask's own ``handle_exception`` sends it at most once per request in the
+    common case, but nothing stops the exact same exception object from
+    reaching ``_report_flask_exception`` twice for what is really one
+    failure — e.g. an app that composes multiple Flask/WSGI layers (a view
+    that invokes another Flask app's ``wsgi_app`` internally and lets its
+    exception propagate up to be re-handled by the outer app's own
+    ``handle_exception``), or an extension that manually re-sends this
+    signal to reuse this integration.
+
+    This is the guard the prior fix-round docstring at
+    ``_report_flask_exception`` describes: keyed on ``id(exception)`` so a
+    second delivery of the *same* exception object is dropped, while a
+    second, distinct exception (covered by
+    ``test_reports_a_distinct_exception_raised_by_the_error_handler_itself``
+    above) is still reported. Deleting that guard leaves this suite green
+    everywhere else, because no other test ever delivers the same exception
+    object through the signal twice — this is the missing regression test
+    for it.
+    """
+    app = Flask(__name__)
+    exc = RuntimeError("delivered twice, same object")
+
+    RequestStore.set({})
+    try:
+        with patch(
+            "end_point_blank.middleware.report_interaction.ExceptionWriter.write"
+        ) as write:
+            flask.got_request_exception.send(app, exception=exc)
+            flask.got_request_exception.send(app, exception=exc)
+
+        write.assert_called_once()
+        assert write.call_args.args[0] is exc
+    finally:
+        RequestStore.clear()
 
 
 def test_connect_flask_signal_survives_missing_blinker_signal_support():
