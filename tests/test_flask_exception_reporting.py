@@ -1,3 +1,4 @@
+import sys
 from unittest.mock import patch
 
 import flask
@@ -7,6 +8,7 @@ from flask import Flask
 from end_point_blank.middleware import report_interaction
 from end_point_blank.middleware.report_interaction import ReportInteractionMiddleware
 from end_point_blank.request_store import RequestStore
+from end_point_blank.unauthorized_error import UnauthorizedError
 
 
 def app_with_exception(propagate_exceptions):
@@ -137,6 +139,94 @@ def test_does_not_report_the_same_exception_object_delivered_twice_through_the_s
         assert write.call_args.args[0] is exc
     finally:
         RequestStore.clear()
+
+
+def test_does_not_report_an_unauthorized_error_delivered_through_the_signal():
+    """``UnauthorizedError`` represents an expected, intentional refusal (the
+    caller's authenticate/authorize call was answered with a 401/403), not an
+    application bug -- this module's own class docstring says as much:
+    "re-raised without logging, as unauthorized access is expected behavior."
+
+    A Flask app with default config (``PROPAGATE_EXCEPTIONS`` unset) swallows
+    an unhandled view exception into a plain 500 and sends it through
+    ``got_request_exception`` *before* the middleware's own
+    ``except UnauthorizedError`` branch in ``__call__`` ever gets a chance to
+    see it -- Flask already caught it. So the ``isinstance(exception,
+    UnauthorizedError)`` half of the guard at
+    ``report_interaction.py:28`` is the *only* thing standing between an
+    expected refusal and it being filed as an application exception.
+
+    Deleting ``or isinstance(exception, UnauthorizedError)`` from that guard
+    leaves the rest of this suite green -- nothing else delivers an
+    UnauthorizedError through this signal -- so this is the missing
+    regression test for it.
+    """
+    app = Flask(__name__)
+    exc = UnauthorizedError("authorize failed: forbidden", 403)
+
+    RequestStore.set({})
+    try:
+        with patch(
+            "end_point_blank.middleware.report_interaction.ExceptionWriter.write"
+        ) as write:
+            flask.got_request_exception.send(app, exception=exc)
+
+        write.assert_not_called()
+    finally:
+        RequestStore.clear()
+
+
+def test_does_not_raise_when_the_wrapping_app_never_set_up_the_middleware():
+    """``got_request_exception.connect`` in ``_connect_flask_signal`` runs at
+    *import* time and is process-global -- not scoped to any particular Flask
+    app instance. That means the receiver fires for exceptions raised inside
+    ANY Flask app in the process, including one that never wrapped its
+    ``wsgi_app`` in :class:`ReportInteractionMiddleware` and therefore never
+    called ``RequestStore.set`` -- ``RequestStore.get()`` is ``None`` for such
+    an app's requests.
+
+    Without the ``environ is None`` half of the guard at
+    ``report_interaction.py:28``, the ``environ.get(...)`` call a few lines
+    down raises ``AttributeError: 'NoneType' object has no attribute 'get'``
+    from *inside* Flask's own ``handle_exception`` -- replacing the host
+    app's clean 500 with an SDK crash of its own. That is exactly the
+    scenario this half of the guard exists to prevent.
+
+    Deleting that half of the guard leaves the rest of this suite green --
+    nothing else sends this signal with ``RequestStore`` unset -- so this is
+    the missing regression test for it.
+    """
+    app = Flask(__name__)
+    exc = RuntimeError("view failed in an app that never wrapped itself")
+
+    RequestStore.clear()  # simulate an app that never wrapped ReportInteractionMiddleware
+    with patch(
+        "end_point_blank.middleware.report_interaction.ExceptionWriter.write"
+    ) as write:
+        flask.got_request_exception.send(app, exception=exc)  # must not raise
+
+    write.assert_not_called()
+
+
+def test_connect_flask_signal_survives_flask_not_being_installed():
+    """flask is not a base dependency of this package -- it is only pulled in,
+    at ``>=2.3``, by the optional ``flask`` extra -- so a host can perfectly
+    well install this SDK without flask at all. ``_connect_flask_signal`` runs
+    unconditionally at import time (``report_interaction.py:75``), so
+    ``from flask import got_request_exception`` failing with ``ImportError``
+    must degrade to a no-op WSGI integration, exactly like the
+    missing-blinker case covered by the test below -- not crash that host's
+    import of this module.
+
+    Nothing in the rest of this suite exercises a real ``ImportError`` here
+    (flask is a hard dev-dependency of this test suite, so the only existing
+    coverage of this ``except`` clause comes from the ``RuntimeError`` case
+    below) -- dropping ``ImportError`` from the ``except (ImportError,
+    RuntimeError)`` tuple leaves the rest of this suite green, so this is the
+    missing regression test for it.
+    """
+    with patch.dict(sys.modules, {"flask": None}):
+        report_interaction._connect_flask_signal()  # must not raise
 
 
 def test_connect_flask_signal_survives_missing_blinker_signal_support():
