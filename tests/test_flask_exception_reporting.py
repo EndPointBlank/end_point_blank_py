@@ -141,6 +141,51 @@ def test_does_not_report_the_same_exception_object_delivered_twice_through_the_s
         RequestStore.clear()
 
 
+def test_reports_two_distinct_exceptions_delivered_through_the_signal_in_the_same_request():
+    """The guard at ``report_interaction.py:41`` is keyed on the identity of
+    the exception that was reported (``== id(exception)``), not on whether
+    *any* exception has already been reported this request. Mutating it to
+    ``environ.get(_FLASK_EXCEPTION_REPORTED_KEY) is not None`` -- "was
+    something already reported?" -- leaves the rest of this suite green,
+    because no other test sends two genuinely *different* exception objects
+    through the signal for the same request; the same-object test above only
+    covers a second delivery of the identical exception.
+
+    That distinction matters for a composed-app scenario: an outer Flask
+    app's view invokes an inner Flask app's ``wsgi_app`` directly. The inner
+    app handles its own request, hits its own bug, and reports that
+    exception through this same process-global ``got_request_exception``
+    signal (it is not scoped per-app or per-request). Control then returns
+    to the outer view, which raises its OWN, distinct exception -- the one
+    that actually turns into the client's 500. Both are real, independent
+    failures and both must be reported. A boolean "something was already
+    reported" guard would see the inner exception's flag already set and
+    silently drop the outer one -- exactly the defect class this file's
+    dedup guard exists to prevent, just one exception earlier in the chain
+    than ``test_reports_a_distinct_exception_raised_by_the_error_handler_itself``
+    covers.
+    """
+    app = Flask(__name__)
+    exc_a = RuntimeError("A: inner view failed")
+    exc_b = TypeError("B: upstream call returned 500")
+
+    RequestStore.set({})
+    try:
+        with patch(
+            "end_point_blank.middleware.report_interaction.ExceptionWriter.write"
+        ) as write:
+            flask.got_request_exception.send(app, exception=exc_a)
+            flask.got_request_exception.send(app, exception=exc_b)
+
+        assert write.call_count == 2, (
+            "the second, distinct exception was silently dropped by the dedup guard"
+        )
+        assert write.call_args_list[0].args[0] is exc_a
+        assert write.call_args_list[1].args[0] is exc_b
+    finally:
+        RequestStore.clear()
+
+
 def test_does_not_report_an_unauthorized_error_delivered_through_the_signal():
     """``UnauthorizedError`` represents an expected, intentional refusal (the
     caller's authenticate/authorize call was answered with a 401/403), not an
