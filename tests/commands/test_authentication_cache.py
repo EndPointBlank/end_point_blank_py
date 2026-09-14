@@ -1,7 +1,27 @@
+import datetime as dt
 import time
 import pytest
+from end_point_blank.commands import authentication_cache as authentication_cache_module
 from end_point_blank.commands.authentication_cache import AuthenticationCache
 from end_point_blank.configuration import Configuration
+
+
+def _freeze(monkeypatch, when):
+    """Pin the cache's clock (module-level ``datetime.now(tz=...)``) to a
+    fixed instant, so tests can move time forward deterministically instead
+    of sleeping in real time. Patches the ``datetime`` name inside the
+    authentication_cache module -- the same wall clock the cache already
+    uses, just with a controlled value -- so it works whether or not the
+    module has any TTL-on-read logic at all (i.e. against unmodified
+    origin/master too).
+    """
+
+    class _Frozen(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when
+
+    monkeypatch.setattr(authentication_cache_module, "datetime", _Frozen)
 
 
 @pytest.fixture(autouse=True)
@@ -115,3 +135,115 @@ class TestEviction:
 
         assert cache.retrieve("key0") is None
         assert cache.retrieve("key1000") == "creds"
+
+
+class TestRuntimeCacheTtlChanges:
+    """sc-755: cache_ttl is re-evaluated on EVERY read against the TTL
+    *currently* configured, anchored to each entry's write time -- not only
+    against the TTL that was in effect when the entry was written.
+    """
+
+    def test_a_lowering_ttl_expires_an_already_cached_entry_on_its_next_read(self, monkeypatch):
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("key1", "creds")
+
+        Configuration().cache_ttl = 10
+        _freeze(monkeypatch, t0 + dt.timedelta(seconds=11))
+
+        assert cache.retrieve("key1") is None
+
+    def test_b_lowered_ttl_is_not_clamped_against_remaining_time_to_original_expiry(self, monkeypatch):
+        # ttl 300 -> store at t0 -> ttl 10 -> read at t0+295. Remaining time to
+        # the *original* expiry (t0+300) is only 5s, which is < the new ttl of
+        # 10s. A naive "expires_at - now <= current_ttl" clamp would call this
+        # a HIT (5 <= 10) even though 295s -- far more than the new 10s window
+        # -- have elapsed since write. Must be a MISS.
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("key1", "creds")
+
+        Configuration().cache_ttl = 10
+        _freeze(monkeypatch, t0 + dt.timedelta(seconds=295))
+
+        assert cache.retrieve("key1") is None
+
+    def test_c_raising_ttl_never_extends_an_entry_past_its_original_expiry(self, monkeypatch):
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 10
+        cache.store("key1", "creds")
+
+        Configuration().cache_ttl = 300
+        _freeze(monkeypatch, t0 + dt.timedelta(seconds=11))
+
+        assert cache.retrieve("key1") is None
+
+    def test_d_disabling_actually_removes_the_entry_and_re_enabling_does_not_resurrect_it(
+        self, monkeypatch
+    ):
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("key1", "creds")
+        assert cache.size() == 1
+
+        Configuration().cache_ttl = 0
+        assert cache.retrieve("key1") is None
+        assert cache.size() == 0  # actually deleted, not merely hidden
+
+        Configuration().cache_ttl = 300
+        assert cache.retrieve("key1") is None  # not resurrected
+        assert cache.size() == 0
+
+    def test_e_unchanged_ttl_within_window_is_still_a_hit(self, monkeypatch):
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("key1", "creds")
+
+        _freeze(monkeypatch, t0 + dt.timedelta(seconds=5))
+
+        assert cache.retrieve("key1") == "creds"
+
+    def test_store_while_disabled_inserts_nothing(self, monkeypatch):
+        cache = AuthenticationCache()
+        Configuration().cache_ttl = 0
+        cache.store("key1", "creds")
+        assert cache.size() == 0
+        assert cache.keys() == []
+
+    def test_exists_is_false_and_deletes_when_a_present_entry_is_invalidated_by_a_lowered_ttl(
+        self, monkeypatch
+    ):
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("key1", "creds")
+
+        Configuration().cache_ttl = 10
+        _freeze(monkeypatch, t0 + dt.timedelta(seconds=11))
+
+        assert cache.exists("key1") is False
+        assert cache.size() == 0  # actually deleted, not merely hidden
+
+    def test_store_sweeps_a_sibling_entry_invalidated_by_a_lowered_ttl(self, monkeypatch):
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("stale", "creds")
+
+        Configuration().cache_ttl = 10
+        _freeze(monkeypatch, t0 + dt.timedelta(seconds=11))
+        cache.store("fresh", "creds")
+
+        assert cache.keys() == ["fresh"]

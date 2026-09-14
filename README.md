@@ -269,7 +269,12 @@ When no route matched at all — a 404, or a request context pushed by hand — 
 back to the concrete path, since sending that is better than sending nothing.
 
 Successful authorization results are cached in-process for `cache_ttl` seconds (default 300) to
-avoid a network round trip on every request.
+avoid a network round trip on every request. Each entry's validity is re-checked against the
+*currently* configured `cache_ttl` on every read, not only the value in effect when it was
+written: lowering `cache_ttl` at runtime shortens the remaining life of entries already cached
+(from their next read), raising it never extends an entry past the expiry it was written with,
+and setting it to `0` or below disables the cache outright — any entry found on a subsequent read
+is deleted, and nothing is stored while disabled.
 
 A grant also names the service that called you. `@authorized` reads
 `data[0].source_application_environment_id` from EndPointBlank's `201` and stores it on the

@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- **Runtime `cache_ttl` changes now apply to already-cached entries (sc-755).**
+  `AuthenticationCache` only ever consulted `cache_ttl` at `store()` time, baking a fixed expiry
+  into each entry. Lowering `cache_ttl` at runtime (e.g. to make a revocation take effect sooner)
+  did nothing to entries already cached — they kept answering until their original expiry, up to
+  the old TTL, not the new one. Setting `cache_ttl` to `0` or below did nothing either: it neither
+  stopped new entries from being written with a token TTL nor cleared what was already there.
+
+  Each entry now records its write time, and validity is re-derived on every read against the
+  *currently* configured `cache_ttl`, anchored to that write time — not by comparing remaining
+  time against the entry's original fixed expiry, which can wrongly look valid again once enough
+  real time has passed for the remaining-to-original-expiry window to coincidentally fall back
+  under a new, shorter TTL. Concretely: lowering `cache_ttl` shortens the remaining life of
+  entries already cached (applies on their next read); raising it never extends an entry past the
+  expiry it was written with; and a `cache_ttl` of `0` or below disables the cache outright — any
+  entry found on a subsequent read is deleted (not merely hidden), and a `store()` performed while
+  disabled inserts nothing.
+
 - **Errors, logs and responses name their caller again (sc-473).**
   `EndpointAuthorize` read only `deprecation` from intake's `201`. The caller's
   source application environment, which intake sends as
