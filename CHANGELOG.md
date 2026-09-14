@@ -4,6 +4,41 @@
 
 ### Fixed
 
+- **Runtime `cache_ttl` changes now apply to already-cached entries (sc-755).**
+  `AuthenticationCache` only ever consulted `cache_ttl` at `store()` time, baking a fixed expiry
+  into each entry. Lowering `cache_ttl` at runtime (e.g. to make a revocation take effect sooner)
+  did nothing to entries already cached — they kept answering until their original expiry, up to
+  the old TTL, not the new one. Setting `cache_ttl` to `0` or below did nothing either: an entry
+  cached before disabling stayed a hit until its original expiry, since `store()` was the only
+  place the TTL was ever consulted.
+
+  Each entry now records its write time, and validity is re-derived on every read against the
+  *currently* configured `cache_ttl`, anchored to that write time — not by comparing remaining
+  time against the entry's original fixed expiry, which can wrongly look valid again once enough
+  real time has passed for the remaining-to-original-expiry window to coincidentally fall back
+  under a new, shorter TTL. Concretely: lowering `cache_ttl` shortens the remaining life of
+  entries already cached (applies on their next read), and raising it never extends an entry past
+  the expiry it was written with.
+
+  A `cache_ttl` of `0` or below disables the cache. Whenever a read (`retrieve`/`exists`) or a
+  `store()` *observes* the cache disabled, it clears the **entire** cache — every entry, not only
+  the one looked up or written — and a `store()` performed while disabled inserts nothing. This
+  matches the Elixir SDK's sc-660 `AuthCache.clear/0` and closes the gap a per-entry-only delete
+  left open: a revoked grant on an untouched key could otherwise answer again once `cache_ttl` was
+  raised back up. Known, documented limit: a disable followed by a re-enable with **no** cache read
+  or store in between flushes nothing, since nothing observes the disabled state to trigger the
+  clear — there is no configure-time flushing.
+
+  The cache is per **process** (`AuthenticationCache` is a process-local singleton), and so is
+  this trigger: under a multi-worker server (gunicorn, uWSGI, …) each worker holds its own cache,
+  and a disabled read or store in one worker clears only that worker's cache. There is no single
+  action that flushes every worker; each must itself see a disabled read or store before its own
+  cache is cleared.
+
+  Not changed in this story: `Configuration().cache_ttl = None` still raises `TypeError` on the
+  next read (unlike JS/Java, which treat `None`/`null` as the 300s default). Bringing the SDKs'
+  `None`/`nil`/`null` handling into agreement is tracked separately as sc-970.
+
 - **Errors, logs and responses name their caller again (sc-473).**
   `EndpointAuthorize` read only `deprecation` from intake's `201`. The caller's
   source application environment, which intake sends as
