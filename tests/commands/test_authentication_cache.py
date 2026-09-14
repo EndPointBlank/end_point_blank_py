@@ -186,6 +186,19 @@ class TestRuntimeCacheTtlChanges:
         assert cache.retrieve("key1") is None
 
     def test_c_raising_ttl_never_extends_an_entry_past_its_original_expiry(self, monkeypatch):
+        """GUARD, not a regression reproduction: expected to pass on
+        origin/master. Master's fixed-expiry-only model never re-reads
+        cache_ttl on retrieval at all, so it trivially never extends an
+        entry either -- this test cannot differentiate master from the fix.
+
+        It guards against a plausible WRONG implementation of this PR's own
+        read path: computing validity as `now - written_at < current_ttl`
+        alone, with no cap against the entry's own original expires_at (the
+        `now < expires_at` condition). That wrong version has no memory of
+        the TTL an entry was written under, so raising cache_ttl later
+        would wrongly resurrect it. See _is_valid's docstring for the two
+        conditions this guards the AND of.
+        """
         cache = AuthenticationCache()
         t0 = dt.datetime.now(dt.timezone.utc)
         _freeze(monkeypatch, t0)
@@ -292,6 +305,13 @@ class TestRuntimeCacheTtlChanges:
         assert cache.retrieve("C") is None
 
     def test_e_unchanged_ttl_within_window_is_still_a_hit(self, monkeypatch):
+        """GUARD, not a regression reproduction: expected to pass on
+        origin/master, per the sc-755 spec's own note that this sanity
+        check may pass on master. It pins that ordinary hits still work --
+        an unchanged cache_ttl, read well within the window -- so that all
+        the new read-time re-derivation logic in this PR hasn't broken the
+        basic case while fixing the runtime-change cases.
+        """
         cache = AuthenticationCache()
         t0 = dt.datetime.now(dt.timezone.utc)
         _freeze(monkeypatch, t0)
