@@ -8,8 +8,9 @@
   `AuthenticationCache` only ever consulted `cache_ttl` at `store()` time, baking a fixed expiry
   into each entry. Lowering `cache_ttl` at runtime (e.g. to make a revocation take effect sooner)
   did nothing to entries already cached — they kept answering until their original expiry, up to
-  the old TTL, not the new one. Setting `cache_ttl` to `0` or below did nothing either: it neither
-  stopped new entries from being written with a token TTL nor cleared what was already there.
+  the old TTL, not the new one. Setting `cache_ttl` to `0` or below did nothing either: an entry
+  cached before disabling stayed a hit until its original expiry, since `store()` was the only
+  place the TTL was ever consulted.
 
   Each entry now records its write time, and validity is re-derived on every read against the
   *currently* configured `cache_ttl`, anchored to that write time — not by comparing remaining
