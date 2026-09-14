@@ -44,6 +44,11 @@ class AuthenticationCache:
       cache read or store in between flushes nothing, because nothing ever
       observes the disabled state to trigger the clear. This is deliberate
       -- there is no configure-time flushing in this story.
+    - This instance, like the process it lives in, is not shared: under a
+      multi-worker server (gunicorn, uWSGI, ...) each worker holds its own
+      singleton and its own cache. A disabled read or store in one worker
+      clears only that worker's cache; every worker must itself observe a
+      disabled read or store before its own cache is cleared.
 
     Equivalent to the Ruby gem's ``EndPointBlank::Commands::AuthenticationCache``.
     """

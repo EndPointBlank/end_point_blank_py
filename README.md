@@ -268,20 +268,27 @@ registrar published.
 When no route matched at all — a 404, or a request context pushed by hand — the decorators fall
 back to the concrete path, since sending that is better than sending nothing.
 
-Successful authorization results are cached in-process for `cache_ttl` seconds (default 300) to
-avoid a network round trip on every request. Each entry's validity is re-checked against the
-*currently* configured `cache_ttl` on every read, not only the value in effect when it was
-written: lowering `cache_ttl` at runtime shortens the remaining life of entries already cached
-(from their next read), and raising it never extends an entry past the expiry it was written with.
+Successful **`@authorized`** results are cached in-process for `cache_ttl` seconds (default 300)
+to avoid a network round trip on every request. `@authenticated` never reads or writes this cache:
+it calls `BasicAuthenticate`, not `EndpointAuthorize`, so an `@authenticated`-only request has no
+effect on it at all. Each entry's validity is re-checked against the *currently* configured
+`cache_ttl` on every read, not only the value in effect when it was written: lowering `cache_ttl`
+at runtime shortens the remaining life of entries already cached (from their next read), and
+raising it never extends an entry past the expiry it was written with.
 
-Setting `cache_ttl` to `0` or below disables the cache outright. Whenever a read or a store
-*observes* the cache disabled, it clears the **entire** cache — every cached entry, not only the
-one being looked up or written — and a store performed while disabled inserts nothing. This means
-a caller revoked while the cache is disabled cannot be resurrected by re-enabling: nothing is left
-to resurrect. It also means a disable-then-re-enable with **no** cache traffic in between flushes
-nothing at all, since nothing ever observed the disabled state to trigger the clear — if you need a
-guaranteed flush, follow the disable with at least one call that touches the cache (any
-authorization attempt does) before re-enabling.
+Setting `cache_ttl` to `0` or below disables the cache. The trigger for a clear is exactly this:
+an `@authorized` request, or a direct `AuthenticationCache().retrieve()` / `.exists()` / `.store()`
+call, made **in that process** while `cache_ttl` is disabled. When that happens, it clears the
+**entire** cache for that process — every cached entry, not only the one being looked up or
+written — and a `store()` performed while disabled inserts nothing.
+
+The cache is per process, not shared, and so is this trigger. Under a multi-worker server
+(gunicorn, uWSGI, several app processes behind a load balancer, …) each worker holds its own
+cache: a disabled `@authorized` request or direct cache call in one worker clears only that
+worker's cache, not the others'. A disable followed by a re-enable with **no** `@authorized`
+request or direct cache call landing on a given worker in between flushes nothing on that worker,
+since nothing there ever observed the disabled state. There is no single action that flushes every
+worker; if you need that, call `AuthenticationCache().clear()` in each process yourself.
 
 A grant also names the service that called you. `@authorized` reads
 `data[0].source_application_environment_id` from EndPointBlank's `201` and stores it on the

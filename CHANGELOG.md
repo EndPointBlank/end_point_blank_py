@@ -29,6 +29,12 @@
   or store in between flushes nothing, since nothing observes the disabled state to trigger the
   clear — there is no configure-time flushing.
 
+  The cache is per **process** (`AuthenticationCache` is a process-local singleton), and so is
+  this trigger: under a multi-worker server (gunicorn, uWSGI, …) each worker holds its own cache,
+  and a disabled read or store in one worker clears only that worker's cache. There is no single
+  action that flushes every worker; each must itself see a disabled read or store before its own
+  cache is cleared.
+
   Not changed in this story: `Configuration().cache_ttl = None` still raises `TypeError` on the
   next read (unlike JS/Java, which treat `None`/`null` as the 300s default). Bringing the SDKs'
   `None`/`nil`/`null` handling into agreement is tracked separately as sc-970.
