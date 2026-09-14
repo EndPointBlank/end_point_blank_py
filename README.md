@@ -272,9 +272,16 @@ Successful authorization results are cached in-process for `cache_ttl` seconds (
 avoid a network round trip on every request. Each entry's validity is re-checked against the
 *currently* configured `cache_ttl` on every read, not only the value in effect when it was
 written: lowering `cache_ttl` at runtime shortens the remaining life of entries already cached
-(from their next read), raising it never extends an entry past the expiry it was written with,
-and setting it to `0` or below disables the cache outright — any entry found on a subsequent read
-is deleted, and nothing is stored while disabled.
+(from their next read), and raising it never extends an entry past the expiry it was written with.
+
+Setting `cache_ttl` to `0` or below disables the cache outright. Whenever a read or a store
+*observes* the cache disabled, it clears the **entire** cache — every cached entry, not only the
+one being looked up or written — and a store performed while disabled inserts nothing. This means
+a caller revoked while the cache is disabled cannot be resurrected by re-enabling: nothing is left
+to resurrect. It also means a disable-then-re-enable with **no** cache traffic in between flushes
+nothing at all, since nothing ever observed the disabled state to trigger the clear — if you need a
+guaranteed flush, follow the disable with at least one call that touches the cache (any
+authorization attempt does) before re-enabling.
 
 A grant also names the service that called you. `@authorized` reads
 `data[0].source_application_environment_id` from EndPointBlank's `201` and stores it on the

@@ -1,5 +1,4 @@
 import datetime as dt
-import time
 import pytest
 from end_point_blank.commands import authentication_cache as authentication_cache_module
 from end_point_blank.commands.authentication_cache import AuthenticationCache
@@ -95,11 +94,19 @@ def test_store_ignores_none():
     assert not cache.exists("key1")
 
 
-def test_expired_entry_returns_none():
-    Configuration().cache_ttl = 0
+def test_expired_entry_returns_none(monkeypatch):
+    # Previously built the "expired" entry with cache_ttl=0, which -- since
+    # sc-755's disabled-store rule -- inserts nothing, leaving this test
+    # green without exercising expiry at all. Use a real positive TTL and
+    # advance past it instead, so this still tests what it says it tests.
     cache = AuthenticationCache()
+    t0 = dt.datetime.now(dt.timezone.utc)
+    _freeze(monkeypatch, t0)
+    Configuration().cache_ttl = 10
     cache.store("key1", "creds")
-    time.sleep(0.01)
+
+    _freeze(monkeypatch, t0 + dt.timedelta(seconds=11))
+
     assert cache.retrieve("key1") is None
 
 
@@ -108,13 +115,19 @@ class TestEviction:
     without eviction a busy service accumulates an entry per distinct caller
     forever. Both bounds below are what keep it from becoming a memory leak."""
 
-    def test_expired_entries_are_evicted_when_something_new_is_stored(self):
+    def test_expired_entries_are_evicted_when_something_new_is_stored(self, monkeypatch):
+        # Previously used cache_ttl=0 to manufacture the "stale" entry, which
+        # -- since sc-755's disabled-store rule -- never gets inserted, so
+        # this passed without the sweep in store() ever running. Use a real
+        # positive TTL and advance past it (same TTL throughout, no disable
+        # involved) so the sweep is what makes this pass.
         cache = AuthenticationCache()
-        Configuration().cache_ttl = 0
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 10
         cache.store("stale", "creds")
-        time.sleep(0.01)
 
-        Configuration().cache_ttl = 300
+        _freeze(monkeypatch, t0 + dt.timedelta(seconds=11))
         cache.store("fresh", "creds")
 
         assert cache.keys() == ["fresh"]
@@ -201,6 +214,82 @@ class TestRuntimeCacheTtlChanges:
         Configuration().cache_ttl = 300
         assert cache.retrieve("key1") is None  # not resurrected
         assert cache.size() == 0
+
+    def test_d2_disabled_read_clears_the_entire_cache_not_just_the_looked_up_key(
+        self, monkeypatch
+    ):
+        # AMENDED contract (2026-09-14, after js#50 review): a disabled read
+        # or store must clear the WHOLE cache, not just the key it touched.
+        # A per-entry-only delete lets an unrelated, still-cached grant
+        # resurrect once cache_ttl is raised back up -- the exact scenario
+        # this test reproduces with two keys.
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("A", "grantA")
+        cache.store("B", "grantB")
+
+        Configuration().cache_ttl = 0
+        assert cache.retrieve("A") is None
+        assert cache.size() == 0  # the WHOLE cache, not just A
+
+        Configuration().cache_ttl = 300
+        assert cache.retrieve("B") is None  # not resurrected
+
+    def test_disabled_read_of_an_uncached_key_still_clears_the_whole_cache(self, monkeypatch):
+        # The disabled-clear must fire even when the specific key looked up
+        # was never cached -- the clear is a side effect of *observing*
+        # disabled, not of finding a stale entry for that key.
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("A", "grantA")
+        cache.store("B", "grantB")
+
+        Configuration().cache_ttl = 0
+        assert cache.retrieve("nonexistent") is None
+        assert cache.size() == 0
+
+        Configuration().cache_ttl = 300
+        assert cache.retrieve("A") is None
+        assert cache.retrieve("B") is None
+
+    def test_disabled_exists_clears_the_whole_cache(self, monkeypatch):
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("A", "grantA")
+        cache.store("B", "grantB")
+
+        Configuration().cache_ttl = 0
+        assert cache.exists("A") is False
+        assert cache.size() == 0
+
+        Configuration().cache_ttl = 300
+        assert cache.retrieve("B") is None
+
+    def test_disabled_store_clears_the_whole_cache(self, monkeypatch):
+        # A store that observes disabled must clear everything already
+        # cached, in addition to inserting nothing itself (test_
+        # store_while_disabled_inserts_nothing covers the insert half).
+        cache = AuthenticationCache()
+        t0 = dt.datetime.now(dt.timezone.utc)
+        _freeze(monkeypatch, t0)
+        Configuration().cache_ttl = 300
+        cache.store("A", "grantA")
+        cache.store("B", "grantB")
+
+        Configuration().cache_ttl = 0
+        cache.store("C", "grantC")
+        assert cache.size() == 0
+
+        Configuration().cache_ttl = 300
+        assert cache.retrieve("A") is None
+        assert cache.retrieve("B") is None
+        assert cache.retrieve("C") is None
 
     def test_e_unchanged_ttl_within_window_is_still_a_hit(self, monkeypatch):
         cache = AuthenticationCache()

@@ -10,15 +10,6 @@ from ..configuration import Configuration
 _MAX_SIZE = 1000
 
 
-def _now() -> datetime:
-    """The cache's clock: wall-clock UTC. A thin, mockable indirection over
-    ``datetime.now(tz=timezone.utc)`` -- the same clock, not a different
-    one -- so tests can control elapsed time deterministically instead of
-    sleeping in real time.
-    """
-    return datetime.now(tz=timezone.utc)
-
-
 def _disabled(cache_ttl: int) -> bool:
     """``cache_ttl <= 0`` means the cache is off."""
     return cache_ttl <= 0
@@ -42,9 +33,17 @@ class AuthenticationCache:
       taking effect on their next read.
     - Raising it never extends an entry past the expiry it was written
       with.
-    - A ``cache_ttl`` of ``<= 0`` disables the cache: any entry found on
-      read is treated as a miss and deleted (not merely hidden), and a
-      ``store()`` performed while disabled inserts nothing.
+    - A ``cache_ttl`` of ``<= 0`` disables the cache. Whenever a read
+      (``retrieve``/``exists``) or a ``store()`` observes the cache
+      disabled, it clears the ENTIRE cache -- every entry, not just the one
+      looked up or written -- under the same lock it makes that observation
+      in (see :meth:`_current_ttl_or_clear_locked`). This matches the
+      Elixir SDK's sc-660 ``AuthCache.clear/0``.
+
+      Known, documented gap: a disable followed by a re-enable with **no**
+      cache read or store in between flushes nothing, because nothing ever
+      observes the disabled state to trigger the clear. This is deliberate
+      -- there is no configure-time flushing in this story.
 
     Equivalent to the Ruby gem's ``EndPointBlank::Commands::AuthenticationCache``.
     """
@@ -62,11 +61,33 @@ class AuthenticationCache:
                     cls._instance = instance
         return cls._instance
 
+    def _current_ttl_or_clear_locked(self) -> Optional[int]:
+        """
+        Must be called while holding ``self._lock``. Reads the currently
+        configured ``cache_ttl``. If it means "disabled", clears the ENTIRE
+        cache right here -- in the same critical section as the read -- and
+        returns ``None``; otherwise returns the ttl unchanged.
+
+        Centralizing this in one locked helper, called from ``retrieve``,
+        ``exists`` and ``store`` alike, is what makes "whenever a read or a
+        store observes the cache disabled" true for every call site: none
+        of them can read ``cache_ttl`` before taking the lock, so a store
+        racing a disabling read (or the reverse) cannot land a stale entry
+        after the clear -- the check and the clear-or-proceed are one
+        critical section.
+        """
+        cache_ttl = Configuration().cache_ttl
+        if _disabled(cache_ttl):
+            self._cache.clear()
+            return None
+        return cache_ttl
+
     @staticmethod
     def _is_valid(entry: dict, now: datetime, cache_ttl: int) -> bool:
         """
         Whether *entry* is still a hit, given the *currently configured*
-        ``cache_ttl``. Both conditions must hold:
+        ``cache_ttl`` (already confirmed enabled by the caller). Both
+        conditions must hold:
 
         - ``now < expires_at``: the entry's own expiry -- fixed at write
           time from the TTL then in effect -- has not passed. Raising the
@@ -81,8 +102,6 @@ class AuthenticationCache:
         under a new, shorter TTL window and look valid again even though it
         is older than the new TTL allows.
         """
-        if _disabled(cache_ttl):
-            return False
         if now >= entry["expires_at"]:
             return False
         return (now - entry["written_at"]) < timedelta(seconds=cache_ttl)
@@ -90,19 +109,22 @@ class AuthenticationCache:
     def store(self, key: str, credentials: Any) -> None:
         """
         Stores *credentials* under *key* if non-``None`` and the cache is
-        currently enabled. A store performed while ``cache_ttl`` is
-        disabled (``<= 0``) inserts nothing.
+        currently enabled.
+
+        A store that observes ``cache_ttl`` disabled (``<= 0``) clears the
+        entire cache and inserts nothing -- see
+        :meth:`_current_ttl_or_clear_locked`.
 
         :param key: The cache key.
         :param credentials: The credentials to cache.
         """
         if credentials is None:
             return
-        cache_ttl = Configuration().cache_ttl
-        if _disabled(cache_ttl):
-            return
-        now = _now()
         with self._lock:
+            cache_ttl = self._current_ttl_or_clear_locked()
+            if cache_ttl is None:
+                return
+            now = datetime.now(tz=timezone.utc)
             # Evict entries no longer valid under the currently configured
             # TTL first.
             stale = [k for k, e in self._cache.items() if not self._is_valid(e, now, cache_ttl)]
@@ -122,20 +144,24 @@ class AuthenticationCache:
         Returns credentials for *key* if a valid entry exists under the
         currently configured ``cache_ttl`` (see :meth:`_is_valid`).
 
-        An entry that is no longer valid -- including one found while the
-        cache is disabled -- is deleted here, not merely hidden. The
-        read-then-delete is atomic under ``self._lock``, so a concurrent
-        ``store()`` for the same key cannot race with the delete: it either
-        completes fully before or fully after this read.
+        A read that observes ``cache_ttl`` disabled clears the entire
+        cache, not just *key* -- see :meth:`_current_ttl_or_clear_locked`.
+        Otherwise, an entry present but no longer valid is deleted here,
+        not merely hidden. Every observation-and-mutation happens under
+        ``self._lock``, so a concurrent ``store()`` cannot race a delete or
+        a clear for the same key: one completes fully before the other
+        starts.
 
         :returns: The cached credentials, or ``None`` if absent or invalid.
         """
-        cache_ttl = Configuration().cache_ttl
-        now = _now()
         with self._lock:
+            cache_ttl = self._current_ttl_or_clear_locked()
+            if cache_ttl is None:
+                return None
             entry = self._cache.get(key)
             if entry is None:
                 return None
+            now = datetime.now(tz=timezone.utc)
             if self._is_valid(entry, now, cache_ttl):
                 return entry["credentials"]
             del self._cache[key]
@@ -143,13 +169,17 @@ class AuthenticationCache:
 
     def exists(self, key: str) -> bool:
         """Returns ``True`` if a valid entry exists for *key* under the
-        currently configured ``cache_ttl`` (see :meth:`retrieve`)."""
-        cache_ttl = Configuration().cache_ttl
-        now = _now()
+        currently configured ``cache_ttl`` (see :meth:`retrieve`). A read
+        that observes the cache disabled clears the entire cache, the same
+        as :meth:`retrieve`."""
         with self._lock:
+            cache_ttl = self._current_ttl_or_clear_locked()
+            if cache_ttl is None:
+                return False
             entry = self._cache.get(key)
             if entry is None:
                 return False
+            now = datetime.now(tz=timezone.utc)
             if self._is_valid(entry, now, cache_ttl):
                 return True
             del self._cache[key]

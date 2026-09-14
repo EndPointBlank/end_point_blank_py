@@ -17,10 +17,21 @@
   time against the entry's original fixed expiry, which can wrongly look valid again once enough
   real time has passed for the remaining-to-original-expiry window to coincidentally fall back
   under a new, shorter TTL. Concretely: lowering `cache_ttl` shortens the remaining life of
-  entries already cached (applies on their next read); raising it never extends an entry past the
-  expiry it was written with; and a `cache_ttl` of `0` or below disables the cache outright — any
-  entry found on a subsequent read is deleted (not merely hidden), and a `store()` performed while
-  disabled inserts nothing.
+  entries already cached (applies on their next read), and raising it never extends an entry past
+  the expiry it was written with.
+
+  A `cache_ttl` of `0` or below disables the cache. Whenever a read (`retrieve`/`exists`) or a
+  `store()` *observes* the cache disabled, it clears the **entire** cache — every entry, not only
+  the one looked up or written — and a `store()` performed while disabled inserts nothing. This
+  matches the Elixir SDK's sc-660 `AuthCache.clear/0` and closes the gap a per-entry-only delete
+  left open: a revoked grant on an untouched key could otherwise answer again once `cache_ttl` was
+  raised back up. Known, documented limit: a disable followed by a re-enable with **no** cache read
+  or store in between flushes nothing, since nothing observes the disabled state to trigger the
+  clear — there is no configure-time flushing.
+
+  Not changed in this story: `Configuration().cache_ttl = None` still raises `TypeError` on the
+  next read (unlike JS/Java, which treat `None`/`null` as the 300s default). Bringing the SDKs'
+  `None`/`nil`/`null` handling into agreement is tracked separately as sc-970.
 
 - **Errors, logs and responses name their caller again (sc-473).**
   `EndpointAuthorize` read only `deprecation` from intake's `201`. The caller's
