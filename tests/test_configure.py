@@ -138,7 +138,7 @@ class TestCacheTtl:
         assert cache.retrieve("key") is None
 
     def test_a_positive_value_is_used_by_the_cache(self, _reset):
-        epb.configure(cache_ttl=1)
+        epb.configure(cache_ttl=60)
 
         cache = AuthenticationCache()
         cache.store("key", {"granted": True})

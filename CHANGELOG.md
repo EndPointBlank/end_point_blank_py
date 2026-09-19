@@ -66,9 +66,8 @@
   action that flushes every worker; each must itself see a disabled read or store before its own
   cache is cleared.
 
-  Not changed in this story: `Configuration().cache_ttl = None` still raised `TypeError` on the
-  next read. sc-970, under Changed above, makes it a `ValueError` at assignment and settles `None`
-  across the SDKs.
+  This story left `Configuration().cache_ttl = None` raising `TypeError` on the next read. sc-970,
+  under Changed above, makes it a `ValueError` at assignment and settles `None` across the SDKs.
 
 - **Errors, logs and responses name their caller again (sc-473).**
   `EndpointAuthorize` read only `deprecation` from intake's `201`. The caller's
