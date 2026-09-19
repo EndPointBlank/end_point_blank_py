@@ -209,6 +209,36 @@ class TestCacheTtl:
         assert (_reset.client_id, _reset.cache_ttl) == ("cid", 60)
 
 
+class TestConfigureIsAllOrNothing:
+    """
+    sc-1266: across all five SDKs, ``configure`` must be all-or-nothing. The
+    sc-970 reviews found that Rails and Java kept a partial update when one of
+    several supplied fields failed validation — the caller got an error, but
+    the config was left half-updated. sc-1266 requires every SDK to be
+    checked and to carry this same regression test regardless of which case
+    applies.
+
+    This SDK was already all-or-nothing before this story: ``cache_ttl`` is
+    the only validated field, and ``configure()`` (``src/end_point_blank/
+    __init__.py``) validates it via ``_validate_cache_ttl`` *before* the
+    sequential ``if x is not None: config.x = x`` assignment block runs, so a
+    rejected call never reaches an assignment. ``TestCacheTtl`` above already
+    has a test covering the same property (added under sc-970); this class
+    pins it again under the sc-1266 name, in the exact shape the story's
+    acceptance criteria describe, so the two stories don't share one test
+    that could be edited for one reason and silently stop covering the
+    other.
+    """
+
+    def test_a_rejected_call_applies_none_of_its_other_fields(self, _reset):
+        epb.configure(client_id="before-id")
+
+        with pytest.raises(ValueError):
+            epb.configure(client_id="new-id", cache_ttl=-1)
+
+        assert _reset.client_id == "before-id"
+
+
 class TestThePublicSurface:
     def test_the_names_the_readme_documents_are_importable(self):
         assert {"configure", "Configuration", "LogMode", "UnauthorizedError", "VERSION"} <= set(epb.__all__)
