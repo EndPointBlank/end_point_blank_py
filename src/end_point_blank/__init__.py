@@ -27,16 +27,11 @@ Quick start::
 
 """
 
-from .configuration import Configuration, LogMode, _validate_cache_ttl
+from .configuration import _UNSET, Configuration, LogMode, _Unset, _validate_cache_ttl
 from .tokens.token_result import TokenOutcome, TokenResult
 from .unauthorized_error import UnauthorizedError
 
 VERSION = "0.11.0"
-
-# Default for arguments where an explicit ``None`` must not be read as
-# "omitted". Every other ``configure()`` argument treats ``None`` as omitted;
-# ``cache_ttl`` cannot, because sc-970 makes ``cache_ttl=None`` an error.
-_UNSET = object()
 
 
 def configure(
@@ -51,7 +46,7 @@ def configure(
     version_finder=None,
     application_version: str = None,
     token_ttl: int = None,
-    cache_ttl: int = _UNSET,
+    cache_ttl: int | _Unset = _UNSET,
     trust_proxy_headers: bool = None,
     masking_rules=None,
     mask_hook=None,

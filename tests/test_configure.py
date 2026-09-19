@@ -5,6 +5,8 @@ called more than once (a base call at import, a narrower one per environment),
 and a default overwriting a previously set value is silent misconfiguration.
 """
 
+import importlib
+
 import pytest
 
 import end_point_blank as epb
@@ -190,6 +192,21 @@ class TestCacheTtl:
             epb.configure(client_id="after", app_name="after", cache_ttl=-1)
 
         assert (_reset.client_id, _reset.app_name) == ("before", "before")
+
+    def test_omitted_still_means_omitted_after_the_package_is_reloaded(self, _reset):
+        # A ``configure`` imported before an ``importlib.reload`` of the
+        # package (e.g. ``from end_point_blank import configure`` in a notebook
+        # or REPL, then a reload of the package) keeps its original default for
+        # ``cache_ttl``. That default must still be the sentinel the reloaded
+        # module compares against, or the omitted argument is validated as a
+        # value and rejected.
+        configure_from_before_the_reload = epb.configure
+        importlib.reload(epb)
+        epb.configure(cache_ttl=60)
+
+        configure_from_before_the_reload(client_id="cid")
+
+        assert (_reset.client_id, _reset.cache_ttl) == ("cid", 60)
 
 
 class TestThePublicSurface:

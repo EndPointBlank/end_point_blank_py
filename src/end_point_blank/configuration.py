@@ -56,6 +56,27 @@ def _normalize_base_url(value: str, setting_name: str) -> str:
 DEFAULT_CACHE_TTL = 300  # seconds
 
 
+class _Unset(Enum):
+    """
+    Type of ``_UNSET``: the default for ``configure()`` arguments where an
+    explicit ``None`` must not be read as "omitted". Every other
+    ``configure()`` argument treats ``None`` as omitted; ``cache_ttl`` cannot,
+    because sc-970 makes ``cache_ttl=None`` an error.
+
+    A one-member ``Enum`` rather than a bare ``object()`` so the argument can
+    be annotated ``int | _Unset`` and a type checker narrows it to ``int``
+    after ``is not _UNSET``. It lives here rather than in the package
+    ``__init__`` so an ``importlib.reload`` of the package reuses this object:
+    a ``configure`` imported before the reload keeps it as its default, and
+    must still find it identical to the ``_UNSET`` it compares against.
+    """
+
+    UNSET = "UNSET"
+
+
+_UNSET = _Unset.UNSET
+
+
 def _validate_cache_ttl(value: object) -> int:
     """
     Enforce the ``cache_ttl`` rule shared by the JS, Java, Elixir, Python and
