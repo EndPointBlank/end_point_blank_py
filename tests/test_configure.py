@@ -219,8 +219,8 @@ class TestConfigureIsAllOrNothing:
     applies.
 
     This SDK was already all-or-nothing before this story: ``cache_ttl`` is
-    the only validated field, and ``configure()`` (``src/end_point_blank/
-    __init__.py``) validates it via ``_validate_cache_ttl`` *before* the
+    the only validated field, and ``configure()`` (in the package
+    ``__init__.py``) validates it via ``_validate_cache_ttl`` *before* the
     sequential ``if x is not None: config.x = x`` assignment block runs, so a
     rejected call never reaches an assignment. ``TestCacheTtl`` above already
     has a test covering the same property (added under sc-970); this class
