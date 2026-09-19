@@ -33,6 +33,30 @@ def test_default_cache_ttl():
     assert Configuration().cache_ttl == 300
 
 
+# sc-970: assigning the attribute directly is held to the same rule as
+# configure(cache_ttl=...). Before, Configuration().cache_ttl = None was stored
+# as-is and surfaced only as a TypeError on the next cache read.
+@pytest.mark.parametrize("value", [0, 1, 300, 86400])
+def test_cache_ttl_accepts_zero_and_positive_ints(value):
+    config = Configuration()
+    config.cache_ttl = value
+    assert config.cache_ttl == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, -1, "abc", 3.5, True, False],
+    ids=["None", "negative", "str", "float", "True", "False"],
+)
+def test_assigning_an_invalid_cache_ttl_raises_at_assignment(value):
+    config = Configuration()
+    config.cache_ttl = 120
+    with pytest.raises(ValueError) as exc_info:
+        config.cache_ttl = value
+    assert "cache_ttl" in str(exc_info.value)
+    assert config.cache_ttl == 120
+
+
 @pytest.mark.parametrize("attr", ["base_url", "log_base_url"])
 @pytest.mark.parametrize(
     "raw,expected",

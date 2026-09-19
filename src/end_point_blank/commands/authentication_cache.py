@@ -11,7 +11,9 @@ _MAX_SIZE = 1000
 
 
 def _disabled(cache_ttl: int) -> bool:
-    """``cache_ttl <= 0`` means the cache is off."""
+    """``cache_ttl == 0`` means the cache is off. ``Configuration`` rejects a
+    negative ``cache_ttl`` (sc-970); one written to the private ``_cache_ttl``
+    anyway is treated as off too."""
     return cache_ttl <= 0
 
 
@@ -33,7 +35,7 @@ class AuthenticationCache:
       taking effect on their next read.
     - Raising it never extends an entry past the expiry it was written
       with.
-    - A ``cache_ttl`` of ``<= 0`` disables the cache. Whenever a read
+    - A ``cache_ttl`` of ``0`` disables the cache. Whenever a read
       (``retrieve``/``exists``) or a ``store()`` observes the cache
       disabled, it clears the ENTIRE cache -- every entry, not just the one
       looked up or written -- under the same lock it makes that observation
@@ -116,7 +118,7 @@ class AuthenticationCache:
         Stores *credentials* under *key* if non-``None`` and the cache is
         currently enabled.
 
-        A store that observes ``cache_ttl`` disabled (``<= 0``) clears the
+        A store that observes ``cache_ttl`` disabled (``0``) clears the
         entire cache and inserts nothing -- see
         :meth:`_current_ttl_or_clear_locked`.
 

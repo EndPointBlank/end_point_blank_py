@@ -5,9 +5,12 @@ called more than once (a base call at import, a narrower one per environment),
 and a default overwriting a previously set value is silent misconfiguration.
 """
 
+import importlib
+
 import pytest
 
 import end_point_blank as epb
+from end_point_blank.commands.authentication_cache import AuthenticationCache
 from end_point_blank.configuration import Configuration, LogMode
 
 SETTINGS = [
@@ -86,6 +89,124 @@ class TestOmittedArguments:
         epb.configure(app_name="second")
 
         assert _reset.app_name == "second"
+
+
+class TestCacheTtl:
+    """
+    sc-970: one ``cache_ttl`` rule, the same in the JS, Java, Elixir, Python and
+    Rails SDKs.
+
+    - omitted: the default, 300 seconds (or whatever an earlier call set)
+    - ``0``: the authorization cache is disabled
+    - ``None``, a negative number, or anything that is not an ``int``: a
+      ``ValueError`` from ``configure()`` itself
+
+    Before this, ``cache_ttl=None`` was indistinguishable from omitting the
+    argument, a negative number quietly disabled the cache, a float was used
+    as-is, and a string was stored and only blew up as a ``TypeError`` on the
+    first cache read.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _empty_cache(self):
+        AuthenticationCache().clear()
+        yield
+        AuthenticationCache().clear()
+
+    def test_omitted_means_the_default_of_300_seconds(self, _reset):
+        epb.configure(client_id="cid")
+
+        assert _reset.cache_ttl == 300
+
+    def test_omitted_leaves_an_earlier_value_alone(self, _reset):
+        epb.configure(cache_ttl=60)
+
+        epb.configure(client_id="cid")
+        epb.configure()
+
+        assert _reset.cache_ttl == 60
+
+    def test_zero_is_accepted_and_disables_the_cache(self, _reset):
+        epb.configure(cache_ttl=0)
+
+        cache = AuthenticationCache()
+        cache.store("key", {"granted": True})
+
+        assert _reset.cache_ttl == 0
+        # Checked before any read: an enabled cache with a 0-second TTL would
+        # store the entry and let it expire, so a read alone cannot tell
+        # "disabled" from "expired".
+        assert cache.size() == 0
+        assert cache.retrieve("key") is None
+
+    def test_a_positive_value_is_used_by_the_cache(self, _reset):
+        epb.configure(cache_ttl=60)
+
+        cache = AuthenticationCache()
+        cache.store("key", {"granted": True})
+
+        assert cache.retrieve("key") == {"granted": True}
+
+    def test_an_explicit_none_raises_and_says_to_omit_it(self, _reset):
+        epb.configure(cache_ttl=60)
+
+        with pytest.raises(ValueError) as exc_info:
+            epb.configure(cache_ttl=None)
+
+        message = str(exc_info.value)
+        assert "cache_ttl" in message
+        assert "omit" in message.lower()
+        assert "300" in message
+        assert _reset.cache_ttl == 60
+
+    @pytest.mark.parametrize("value", [-1, -5, -300])
+    def test_a_negative_value_raises(self, value, _reset):
+        epb.configure(cache_ttl=60)
+
+        with pytest.raises(ValueError) as exc_info:
+            epb.configure(cache_ttl=value)
+
+        assert "cache_ttl" in str(exc_info.value)
+        assert _reset.cache_ttl == 60
+
+    @pytest.mark.parametrize(
+        "value",
+        ["abc", "60", 3.5, 300.0, True, False, [60]],
+        ids=["str", "numeric-str", "float", "whole-float", "True", "False", "list"],
+    )
+    def test_a_value_that_is_not_an_int_raises(self, value, _reset):
+        epb.configure(cache_ttl=60)
+
+        with pytest.raises(ValueError) as exc_info:
+            epb.configure(cache_ttl=value)
+
+        assert "cache_ttl" in str(exc_info.value)
+        assert _reset.cache_ttl == 60
+
+    def test_a_rejected_cache_ttl_applies_nothing_else_from_the_same_call(self, _reset):
+        # The error is raised before any setting is written, so a caller that
+        # catches it is not left running on half of the call it made.
+        epb.configure(client_id="before", app_name="before")
+
+        with pytest.raises(ValueError):
+            epb.configure(client_id="after", app_name="after", cache_ttl=-1)
+
+        assert (_reset.client_id, _reset.app_name) == ("before", "before")
+
+    def test_omitted_still_means_omitted_after_the_package_is_reloaded(self, _reset):
+        # A ``configure`` imported before an ``importlib.reload`` of the
+        # package (e.g. ``from end_point_blank import configure`` in a notebook
+        # or REPL, then a reload of the package) keeps its original default for
+        # ``cache_ttl``. That default must still be the sentinel the reloaded
+        # module compares against, or the omitted argument is validated as a
+        # value and rejected.
+        configure_from_before_the_reload = epb.configure
+        importlib.reload(epb)
+        epb.configure(cache_ttl=60)
+
+        configure_from_before_the_reload(client_id="cid")
+
+        assert (_reset.client_id, _reset.cache_ttl) == ("cid", 60)
 
 
 class TestThePublicSurface:
