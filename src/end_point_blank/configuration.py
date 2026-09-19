@@ -53,6 +53,52 @@ def _normalize_base_url(value: str, setting_name: str) -> str:
     return stripped
 
 
+DEFAULT_CACHE_TTL = 300  # seconds
+
+
+def _validate_cache_ttl(value: object) -> int:
+    """
+    Enforce the ``cache_ttl`` rule shared by the JS, Java, Elixir, Python and
+    Rails SDKs (sc-970), and return *value* unchanged if it passes:
+
+    - an ``int`` of ``0`` or more is accepted, and ``0`` disables the
+      authorization cache;
+    - ``None``, a negative number, or anything that is not an ``int`` raises
+      ``ValueError``.
+
+    To get the default, omit ``cache_ttl`` from ``configure()`` -- ``None`` is
+    not a spelling of "the default". A ``bool`` is refused although Python
+    counts it as an ``int``: ``True`` would otherwise be a one-second TTL and
+    ``False`` would switch caching off, neither of which anyone means by
+    writing a flag.
+
+    This runs where the value is set, not where the cache reads it, so a bad
+    value fails at startup rather than as a ``TypeError`` on the first
+    ``@authorized`` request.
+    """
+    if value is None:
+        raise ValueError(
+            "cache_ttl is None. To use the default of "
+            f"{DEFAULT_CACHE_TTL} seconds, omit cache_ttl from configure() "
+            "rather than passing None; to disable the authorization cache, "
+            "set cache_ttl to 0."
+        )
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"cache_ttl must be an int number of seconds, got {value!r} "
+            f"({type(value).__name__}). Omit cache_ttl from configure() to use "
+            f"the default of {DEFAULT_CACHE_TTL} seconds, or set it to 0 to "
+            "disable the authorization cache."
+        )
+    if value < 0:
+        raise ValueError(
+            f"cache_ttl must be 0 or more seconds, got {value!r}. Set it to 0 "
+            "to disable the authorization cache; a negative value is not "
+            "accepted as another way of saying that."
+        )
+    return value
+
+
 class Configuration:
     """
     Singleton configuration for the EndPointBlank library.
@@ -107,7 +153,7 @@ class Configuration:
         self.version_finder: Optional[Callable] = None
         self.application_version: Optional[str] = None
         self.token_ttl: Optional[int] = None  # seconds
-        self.cache_ttl: int = 300  # seconds
+        self._cache_ttl: int = DEFAULT_CACHE_TTL
         self.trust_proxy_headers: bool = True
         self.masking_rules: list[dict] = []
         self.mask_hook: Optional[Callable[[dict, str], dict]] = None
@@ -175,6 +221,19 @@ class Configuration:
     @environment.setter
     def environment(self, value: Optional[str]) -> None:
         self._environment = value
+
+    # Validated on assignment (no environment variable fallback).
+
+    @property
+    def cache_ttl(self) -> int:
+        """Seconds a successful authorization is cached; ``0`` disables the
+        cache. Assigning ``None``, a negative number or a non-``int`` raises
+        ``ValueError`` -- see :func:`_validate_cache_ttl`."""
+        return self._cache_ttl
+
+    @cache_ttl.setter
+    def cache_ttl(self, value: int) -> None:
+        self._cache_ttl = _validate_cache_ttl(value)
 
     # URL builders
     @property

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+### Changed
+
+- **`cache_ttl` follows the rule sc-970 set for all five SDKs, and a bad value fails in
+  `configure()` (sc-970).** The JS, Java, Elixir, Python and Rails SDKs disagreed about what a
+  `cache_ttl` that was not a positive integer meant, and this SDK disagreed with itself: an
+  explicit `None` did one thing through `configure()` and another when assigned directly. The
+  rule now:
+
+  | `cache_ttl` | now | before |
+  | --- | --- | --- |
+  | omitted | the default, 300 seconds | same |
+  | `0` | authorization cache disabled | same |
+  | a positive `int` | that many seconds | same |
+  | `configure(cache_ttl=None)` | `ValueError` | ignored, as if omitted: the value already set (default 300) stayed |
+  | `Configuration().cache_ttl = None` | `ValueError` on assignment | stored; `TypeError` on the next `@authorized` request |
+  | a negative number | `ValueError` | cache silently disabled, the same as `0` |
+  | a `float` (`3.5`, `300.0`) | `ValueError` | used as a fractional TTL |
+  | a `str` (`"60"`) | `ValueError` | stored; `TypeError` on the next `@authorized` request |
+  | a `bool` | `ValueError` | `True` was a one-second TTL, `False` disabled the cache |
+
+  **An application that starts today can fail to start on this version.** If you pass a negative
+  number to turn the cache off, pass `0`. If you pass `cache_ttl=None` to mean "the default" (for
+  example from an unset setting), leave the argument out. If you read the TTL from an environment
+  variable, convert it with `int(...)`.
+
+  `configure()` checks `cache_ttl` before it applies any argument, so a rejected call changes
+  nothing. `cache_ttl` is the only `configure()` argument where `None` is not the same as leaving
+  it out; every other argument still treats `None` as omitted. `Configuration.cache_ttl` is now a
+  property, validated on assignment.
+
 ### Fixed
 
 - **Runtime `cache_ttl` changes now apply to already-cached entries (sc-755).**
@@ -20,7 +50,8 @@
   entries already cached (applies on their next read), and raising it never extends an entry past
   the expiry it was written with.
 
-  A `cache_ttl` of `0` or below disables the cache. Whenever a read (`retrieve`/`exists`) or a
+  A `cache_ttl` of `0` disables the cache (so did a negative value, until sc-970 above made it a
+  `ValueError`). Whenever a read (`retrieve`/`exists`) or a
   `store()` *observes* the cache disabled, it clears the **entire** cache — every entry, not only
   the one looked up or written — and a `store()` performed while disabled inserts nothing. This
   matches the Elixir SDK's sc-660 `AuthCache.clear/0` and closes the gap a per-entry-only delete
@@ -35,9 +66,9 @@
   action that flushes every worker; each must itself see a disabled read or store before its own
   cache is cleared.
 
-  Not changed in this story: `Configuration().cache_ttl = None` still raises `TypeError` on the
-  next read (unlike JS/Java, which treat `None`/`null` as the 300s default). Bringing the SDKs'
-  `None`/`nil`/`null` handling into agreement is tracked separately as sc-970.
+  Not changed in this story: `Configuration().cache_ttl = None` still raised `TypeError` on the
+  next read. sc-970, under Changed above, makes it a `ValueError` at assignment and settles `None`
+  across the SDKs.
 
 - **Errors, logs and responses name their caller again (sc-473).**
   `EndpointAuthorize` read only `deprecation` from intake's `201`. The caller's

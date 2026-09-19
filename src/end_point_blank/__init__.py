@@ -27,11 +27,16 @@ Quick start::
 
 """
 
-from .configuration import Configuration, LogMode
+from .configuration import Configuration, LogMode, _validate_cache_ttl
 from .tokens.token_result import TokenOutcome, TokenResult
 from .unauthorized_error import UnauthorizedError
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
+
+# Default for arguments where an explicit ``None`` must not be read as
+# "omitted". Every other ``configure()`` argument treats ``None`` as omitted;
+# ``cache_ttl`` cannot, because sc-970 makes ``cache_ttl=None`` an error.
+_UNSET = object()
 
 
 def configure(
@@ -46,7 +51,7 @@ def configure(
     version_finder=None,
     application_version: str = None,
     token_ttl: int = None,
-    cache_ttl: int = None,
+    cache_ttl: int = _UNSET,
     trust_proxy_headers: bool = None,
     masking_rules=None,
     mask_hook=None,
@@ -54,7 +59,9 @@ def configure(
     """
     Configure the EndPointBlank library.
 
-    All parameters are optional; only supplied values are updated.
+    All parameters are optional; only supplied values are updated. Passing
+    ``None`` is the same as omitting an argument, except for ``cache_ttl``,
+    where ``None`` raises.
 
     :param client_id: Your EndPointBlank client ID.
     :param client_secret: Your EndPointBlank client secret.
@@ -66,13 +73,22 @@ def configure(
     :param version_finder: Optional callable ``(environ) -> str | None`` for custom version detection.
     :param application_version: Override application version sent in endpoint updates.
     :param token_ttl: Optional access token TTL in seconds sent to the token endpoint.
-    :param cache_ttl: Credential cache TTL in seconds (default: 300).
+    :param cache_ttl: Seconds a successful authorization is cached. Omit it
+        for the default of 300; ``0`` disables the cache. ``None``, a negative
+        number, or anything that is not an ``int`` (a ``float``, a ``str``, a
+        ``bool``) raises ``ValueError`` here, before any setting from this
+        call is applied.
     :param trust_proxy_headers: Whether the per-request ``scheme``/``host``/``port``
         report honors ``X-Forwarded-Proto``/``-Host``/``-Port`` (default: ``True``).
         Set to ``False`` on a directly-exposed deployment with no proxy in front.
     :param masking_rules: List of masking rule dicts (``target``/``path``/``regex``/``replacement_value``).
     :param mask_hook: Optional callable ``(payload, record_type) -> payload`` run after rule-based masking.
     """
+    # Checked before anything is assigned, so a rejected call leaves the
+    # configuration exactly as it was.
+    if cache_ttl is not _UNSET:
+        _validate_cache_ttl(cache_ttl)
+
     config = Configuration()
     if client_id is not None:
         config.client_id = client_id
@@ -94,7 +110,7 @@ def configure(
         config.application_version = application_version
     if token_ttl is not None:
         config.token_ttl = token_ttl
-    if cache_ttl is not None:
+    if cache_ttl is not _UNSET:
         config.cache_ttl = cache_ttl
     if trust_proxy_headers is not None:
         config.trust_proxy_headers = trust_proxy_headers

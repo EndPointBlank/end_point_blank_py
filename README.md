@@ -83,7 +83,7 @@ called with an explicit value for that setting.
 | `version_finder` | — | `None` | Optional callable `(environ) -> str \| None` for custom API-version detection, overriding the built-in header/query/path lookup. |
 | `application_version` | — | `None` | Overrides the app version sent in endpoint updates. |
 | `token_ttl` | — | `None` | Optional access-token TTL (seconds) sent to the token endpoint. |
-| `cache_ttl` | — | `300` | Seconds a successful authorization result is cached (keyed on client-auth + path + method). |
+| `cache_ttl` | — | `300` | Seconds a successful authorization result is cached (keyed on client-auth + path + method). `0` disables the cache. `None`, a negative number or a non-`int` raises `ValueError` — see [`cache_ttl`](#cache_ttl). |
 | `trust_proxy_headers` | — | `True` | Whether the per-request `scheme`/`host`/`port` report honors `X-Forwarded-Proto`/`-Host`/`-Port`. See [Reported base URL](#reported-base-url). |
 | `masking_rules` | — | `[]` | List of masking rule dicts. See [Data masking](#data-masking). |
 | `mask_hook` | — | `None` | Optional callable `(payload, record_type) -> payload` run after rule-based masking. |
@@ -91,6 +91,27 @@ called with an explicit value for that setting.
 `Configuration` is a singleton — `Configuration()` always returns the same instance, and you can
 also read/assign its attributes directly (`Configuration().log_base_url = "..."`) instead of going
 through `configure()`.
+
+### `cache_ttl`
+
+The JS, Java, Elixir, Python and Rails SDKs all follow the same `cache_ttl` rule:
+
+| `cache_ttl` | Meaning |
+|---|---|
+| omitted | the default, 300 seconds (or the value an earlier `configure()` call set) |
+| `0` | the authorization cache is disabled |
+| a positive `int` | that many seconds |
+| `None` | `ValueError` — omit the argument to get the default |
+| a negative number | `ValueError` — use `0` to disable the cache |
+| anything not an `int` (`3.5`, `300.0`, `"60"`, `True`) | `ValueError` |
+
+The error is raised by `configure()` itself, before it applies any of its arguments, so a bad
+value stops your application at startup rather than on its first `@authorized` request.
+Assigning `Configuration().cache_ttl` directly is checked the same way. `cache_ttl` is the only
+`configure()` argument where `None` differs from leaving the argument out; every other argument
+treats `None` as omitted. `bool` is refused even though Python counts it as an `int`, because
+`True` would otherwise mean one second. If the value comes from an environment variable, convert
+it with `int(...)` first.
 
 ### Reported base URL
 
@@ -276,7 +297,8 @@ effect on it at all. Each entry's validity is re-checked against the *currently*
 at runtime shortens the remaining life of entries already cached (from their next read), and
 raising it never extends an entry past the expiry it was written with.
 
-Setting `cache_ttl` to `0` or below disables the cache. The trigger for a clear is exactly this:
+Setting `cache_ttl` to `0` disables the cache (a negative value is rejected; see
+[`cache_ttl`](#cache_ttl)). The trigger for a clear is exactly this:
 an `@authorized` request, or a direct `AuthenticationCache().retrieve()` / `.exists()` / `.store()`
 call, made **in that process** while `cache_ttl` is disabled. When that happens, it clears the
 **entire** cache for that process — every cached entry, not only the one being looked up or
