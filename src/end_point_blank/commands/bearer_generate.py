@@ -9,6 +9,11 @@ class BearerGenerate:
 
     Creates a Base64-encoded ``client_id:client_secret`` string.
     Equivalent to the Ruby gem's ``EndPointBlank::Commands::BearerGenerate``.
+
+    .. deprecated::
+        The header carries this service's own client secret and is only valid for
+        this service's own EndPointBlank intake. Never send it to a provider; use
+        ``Authorization.header(base_url)`` (sc-1469).
     """
 
     @staticmethod
