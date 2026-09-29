@@ -62,7 +62,7 @@ class BasicAuthenticate:
             "source_ip": ip_address or _remote_addr(environ),
         }
 
-        response = post(config.authorize_url, Authorization.header(), body)
+        response = post(config.authorize_url, Authorization._intake_header(), body)
         if response is None:
             return None
 

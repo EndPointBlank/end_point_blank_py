@@ -28,6 +28,7 @@ Quick start::
 """
 
 from .configuration import _UNSET, Configuration, LogMode, _Unset, _validate_cache_ttl
+from .token_unavailable_error import TokenUnavailableError
 from .tokens.token_result import TokenOutcome, TokenResult
 from .unauthorized_error import UnauthorizedError
 
@@ -123,6 +124,7 @@ __all__ = [
     # be able to write the type down in order to handle the failure.
     "TokenOutcome",
     "TokenResult",
+    "TokenUnavailableError",
     "UnauthorizedError",
     "VERSION",
 ]

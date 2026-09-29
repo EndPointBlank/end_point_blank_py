@@ -47,7 +47,7 @@ class EndpointUpdate:
             data.get("environment"),
             data.get("app_version"),
         )
-        response = post(config.endpoint_update_url, Authorization.header(), data)
+        response = post(config.endpoint_update_url, Authorization._intake_header(), data)
         if response is None:
             return
         if response.status_code > 299:

@@ -45,7 +45,7 @@ class GenerateAccessToken:
         if config.token_ttl is not None:
             body["token_ttl"] = config.token_ttl
 
-        response = post(config.access_token_url, Authorization.header(), body)
+        response = post(config.access_token_url, Authorization._intake_header(), body)
 
         # TRANSPORT_ERROR means one thing and only one thing: no usable HTTP
         # status was obtained. ``post`` has already spent its three attempts by

@@ -99,7 +99,7 @@ class EndpointAuthorize:
         # that bought nothing. With no Bearer there is no stale token, so the
         # 401 retry that used to live here is gone: a 401 now means the
         # credential is wrong, which is worth surfacing rather than retrying.
-        response = post(config.authorize_url, Authorization.header(), body)
+        response = post(config.authorize_url, Authorization._intake_header(), body)
 
         if response is None:
             return None

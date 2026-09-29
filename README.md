@@ -185,18 +185,34 @@ epb.configure()  # picks up all ENDPOINTBLANK_* env vars above
 
 ### Authorization
 
-`end_point_blank.authorization.Authorization` builds the `Authorization` header used on
-outbound calls: a `Bearer` token for the target you are about to call, otherwise HTTP Basic
-auth from `client_id`/`client_secret` — which covers both giving no target and a token that
-could not be obtained.
+`end_point_blank.authorization.Authorization.header(base_url)` builds the `Authorization` header
+for an outbound call to a provider — another application you are about to call. It returns
+`Bearer <token>`, minting a token for that target if none is held, and nothing else.
 
 ```python
 from end_point_blank.authorization import Authorization
+from end_point_blank import TokenUnavailableError
 
 # Pass the URL you are about to call, NOT a hostname.
 # Strip any query string or fragment first -- intake rejects both.
-Authorization.header(base_url="https://api.example.com/orders")
+try:
+    auth = Authorization.header("https://api.example.com/orders")  # "Bearer <token>"
+except TokenUnavailableError as error:
+    # No token could be minted. Do not make the call, and do not send Basic
+    # credentials instead -- see below.
+    logger.warning("%s (outcome=%s)", error, error.outcome)
+    raise
 ```
+
+**Your `client_id`/`client_secret` is never sent to a provider.** When no token can be obtained —
+EndPointBlank is unreachable or times out, it rejects the credential (401), the URL resolves to no
+registered environment (4xx), or it fails (5xx) — `header` raises
+`end_point_blank.TokenUnavailableError` instead of falling back to HTTP Basic. The message says the
+token could not be minted and why; `error.base_url` is the URL you asked about, `error.failure` is
+the recorded `TokenResult` (or `None`), and `error.outcome` its `TokenOutcome`, so you can decide
+whether a retry can help (`TRANSPORT_ERROR`, `SERVER_ERROR`) or not (`CREDENTIAL_REJECTED`,
+`REQUEST_REJECTED`). An empty or missing `base_url` raises `ValueError`; there is no no-argument
+form.
 
 The argument is the URL you are about to call. Intake matches it against the registered base
 URLs by longest path prefix, so you do not need to know how the target registered itself —
@@ -205,14 +221,12 @@ strings and fragments must be removed.
 
 Tokens are cached per application environment, keyed on the canonical base URL intake resolves
 the request to (not on the URL you passed), so a service that calls several targets holds a
-token for each. Calls to EndPointBlank itself use the no-argument form:
+token for each.
 
-```python
-Authorization.header()   # "Basic <base64(client_id:client_secret)>"
-```
-
-That is deliberate — EndPointBlank already holds this service's credential, so minting a token
-in order to present it back would buy nothing.
+The SDK's own calls to EndPointBlank (authorize, token minting, endpoint registration, the
+log/request/response/exception writers) still authenticate with HTTP Basic from
+`client_id`/`client_secret`, through an internal helper. That is deliberate — EndPointBlank already
+holds this service's credential, so minting a token in order to present it back would buy nothing.
 
 Route/endpoint authorization itself is enforced via the Flask/Django decorators below
 (`authenticated`, `authorized`), which call the `commands.basic_authenticate.BasicAuthenticate` and
@@ -527,10 +541,11 @@ python -m pytest
 src/end_point_blank/
 ├── __init__.py              # configure(...) + public API surface
 ├── configuration.py         # Configuration singleton + LogMode
-├── authorization.py         # Authorization header builder
+├── authorization.py         # Authorization header builder (Bearer only for providers)
 ├── masking.py               # Client-side masking engine (JSONPath subset + regex)
 ├── request_store.py         # Thread-local current-request store
 ├── unauthorized_error.py    # UnauthorizedError
+├── token_unavailable_error.py # TokenUnavailableError (no token for a provider call)
 ├── log_entry.py             # LogEntry value object
 ├── middleware/               # WSGI middleware (ReportInteractionMiddleware)
 ├── writers/                  # RequestWriter, ResponseWriter, ExceptionWriter, LogWriter,

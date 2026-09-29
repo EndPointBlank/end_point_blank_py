@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Breaking: `Authorization.header` never falls back to HTTP Basic, and raises
+  `TokenUnavailableError` when no token can be minted (sc-1469).** Earlier versions answered
+  `Basic base64(client_id:client_secret)` whenever a token could not be obtained for the URL
+  being called — EndPointBlank unreachable or timing out, a 401 for a revoked credential, a 4xx,
+  a 5xx — so this service's own credential was sent to the *provider* it was calling. A client
+  must never send its credential to a provider. Now:
+
+  | call | now | before |
+  | --- | --- | --- |
+  | `Authorization.header(url)`, token available | `"Bearer <token>"` | same |
+  | `Authorization.header(url)`, no token | raises `end_point_blank.TokenUnavailableError` | `"Basic <client_id:secret>"` |
+  | `Authorization.header()` / `header(None)` / `header("")` | `TypeError` / `ValueError` | `"Basic <client_id:secret>"` |
+
+  The error's message says the token could not be minted, why (unreachable/timeout, credential
+  rejected, HTTP status and detail), and that credentials are never sent to providers. It carries
+  `base_url`, `failure` (the recorded `TokenResult`, or `None`) and `outcome` (its
+  `TokenOutcome`), and is exported from the package root.
+
+  **What to change:** always pass the URL you are about to call; catch `TokenUnavailableError`
+  where you call `header` and fail or retry the outbound call rather than sending it — never
+  build a Basic header yourself as a replacement. If you called `header()` with no argument to
+  talk to EndPointBlank directly, the SDK's own intake calls (authorize, token minting, endpoint
+  registration, the writers) still use Basic through an internal helper and need nothing from you.
+
 ## 0.11.0
 
 ### Changed
