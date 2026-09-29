@@ -5,7 +5,9 @@ Bearer or raises; only the SDK's own calls to intake present Basic.
 """
 import base64
 import pickle
+import threading
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 import requests
@@ -15,6 +17,7 @@ from end_point_blank.authorization import Authorization
 from end_point_blank.commands import _http
 from end_point_blank.commands.basic_authenticate import BasicAuthenticate
 from end_point_blank.commands.endpoint_update import EndpointUpdate
+from end_point_blank.commands.generate_access_token import GenerateAccessToken
 from end_point_blank.configuration import Configuration
 from end_point_blank.token_unavailable_error import TokenUnavailableError
 from end_point_blank.tokens.access_tokens import AccessTokens
@@ -24,6 +27,7 @@ from end_point_blank.writers.direct_writer import DirectWriter
 INTAKE = "https://intake.test"
 LOG_INTAKE = "https://log-intake.test"
 PROVIDER = "https://api.example.com/orders"
+PROVIDER_HOST = urlparse(PROVIDER).hostname
 BASIC = "Basic " + base64.b64encode(b"test-client-id:test-client-secret").decode()
 
 
@@ -61,14 +65,20 @@ class Wire:
 
     def post(self, url, json=None, headers=None, timeout=None):
         self.sent.append((url, dict(headers or {})))
-        if not url.startswith(PROVIDER):
+        if not is_provider(url):
             if isinstance(self._mint, Exception):
                 raise self._mint
             return self._mint
         return response(200)
 
     def provider_requests(self):
-        return [(url, h) for url, h in self.sent if url.startswith(PROVIDER)]
+        return [(url, h) for url, h in self.sent if is_provider(url)]
+
+
+def is_provider(url):
+    # Compare the parsed host, not a string prefix: "https://api.example.com.evil"
+    # starts with PROVIDER's origin too.
+    return urlparse(url).hostname == PROVIDER_HOST
 
 
 @pytest.fixture
@@ -107,10 +117,20 @@ class TestProviderCallsGetBearer:
         assert headers["Authorization"] == "Bearer tok-abc"
 
     def test_the_token_is_looked_up_for_the_requested_url(self):
-        with patch.object(AccessTokens, "token", return_value="tok-abc") as token:
+        minted = TokenResult(TokenOutcome.SUCCESS, 201, {"token": "tok-abc", "base_url": PROVIDER})
+        with patch.object(AccessTokens, "token_result", return_value=minted) as token_result:
             assert Authorization.header(PROVIDER) == "Bearer tok-abc"
 
-        token.assert_called_once_with(PROVIDER)
+        token_result.assert_called_once_with(PROVIDER)
+
+    def test_a_cached_token_is_answered_without_a_second_mint(self, wire_with):
+        wire = wire_with(response(201, {"token": "tok-abc", "base_url": PROVIDER,
+                                        "expired_at": "2099-01-01T00:00:00Z"}))
+
+        assert Authorization.header(PROVIDER) == "Bearer tok-abc"
+        assert Authorization.header(PROVIDER + "/42") == "Bearer tok-abc"
+
+        assert len(wire.sent) == 1
 
 
 class TestNoTokenMeansNoCall:
@@ -158,15 +178,100 @@ class TestNoTokenMeansNoCall:
         assert "test-client-secret" not in str(raised.value)
         assert BASIC.split()[1] not in str(raised.value)
 
-    def test_a_missing_failure_record_still_raises(self):
-        # Another thread's successful mint can clear the record in between.
-        with patch.object(AccessTokens, "token", return_value=None), \
-             patch.object(AccessTokens, "last_failure", return_value=None):
-            with pytest.raises(TokenUnavailableError, match="no reason was recorded") as raised:
-                Authorization.header(PROVIDER)
+    def test_the_error_carries_the_mint_status(self, wire_with):
+        wire_with(response(422, {"error": "no environment"}))
 
-        assert raised.value.failure is None
-        assert raised.value.outcome is None
+        with pytest.raises(TokenUnavailableError) as raised:
+            Authorization.header(PROVIDER)
+
+        assert raised.value.status == 422
+
+    def test_the_status_is_none_when_nothing_answered(self, wire_with):
+        wire_with(requests.Timeout("read timed out"))
+
+        with pytest.raises(TokenUnavailableError) as raised:
+            Authorization.header(PROVIDER)
+
+        assert raised.value.status is None
+
+
+REJECTED = TokenResult(TokenOutcome.CREDENTIAL_REJECTED, 401, {"error": "invalid"})
+BROKEN = TokenResult(TokenOutcome.SERVER_ERROR, 500, {"error": "boom"})
+PARENT = "https://api.example.com"
+
+
+def minted(base_url):
+    return TokenResult(TokenOutcome.SUCCESS, 201, {"token": "tok-other", "base_url": base_url,
+                                                   "expired_at": "2099-01-01T00:00:00Z"})
+
+
+class TestTheReasonBelongsToThisCall:
+    """The failure record is shared per target and read outside the lock. The
+    reason ``header`` raises with must be the one its own mint produced, not
+    whatever another thread left in the record afterwards.
+
+    Deterministic: the hook runs the other thread's mint to completion in the
+    window between this call's mint (lock released) and its raise -- exactly
+    where ``token()`` + ``last_failure()`` used to read the shared record."""
+
+    @pytest.fixture
+    def interleave(self):
+        original = AccessTokens.token_result
+        mints = []
+        other = {}
+
+        def fake_mint(url):
+            return mints.pop(0)
+
+        def hooked(self, url):
+            result = original(self, url)
+            if threading.current_thread() is threading.main_thread() and "call" in other:
+                thread = threading.Thread(target=other.pop("call"))
+                thread.start()
+                thread.join()
+            return result
+
+        def install(this_mint, other_mint, other_call):
+            mints.extend([this_mint, other_mint])
+            other["call"] = other_call
+
+        with patch.object(GenerateAccessToken, "token_result", side_effect=fake_mint), \
+             patch.object(AccessTokens, "token_result", hooked):
+            yield install
+
+        assert mints == [], "the other thread's mint did not run"
+
+    @pytest.mark.parametrize(
+        "other_mint, other_url, left_behind",
+        [
+            (BROKEN, PROVIDER, BROKEN),
+            (minted(PROVIDER), PROVIDER, None),
+            (minted(PARENT), PARENT + "/invoices", None),
+        ],
+        ids=["another-thread-fails-differently", "another-thread-succeeds",
+             "another-base-url-succeeds-and-clears-it"],
+    )
+    def test_a_concurrent_mint_cannot_change_this_calls_reason(
+        self, interleave, other_mint, other_url, left_behind
+    ):
+        interleave(REJECTED, other_mint, lambda: AccessTokens().token(other_url))
+
+        with pytest.raises(TokenUnavailableError) as raised:
+            Authorization.header(PROVIDER)
+
+        # The shared record now says something else (or nothing) ...
+        assert AccessTokens().last_failure(PROVIDER) == left_behind
+        # ... but this call reports its own 401.
+        assert raised.value.failure == REJECTED
+        assert raised.value.outcome is TokenOutcome.CREDENTIAL_REJECTED
+        assert raised.value.status == 401
+        assert "rejected this service's credential" in str(raised.value)
+
+    def test_token_and_last_failure_keep_their_behaviour(self):
+        with patch.object(GenerateAccessToken, "token_result", return_value=REJECTED):
+            assert AccessTokens().token(PROVIDER) is None
+
+        assert AccessTokens().last_failure(PROVIDER) == REJECTED
 
 
 class TestNoUrlIsNoHeader:
@@ -176,11 +281,11 @@ class TestNoUrlIsNoHeader:
 
     @pytest.mark.parametrize("url", [None, ""])
     def test_an_empty_url_raises_without_a_token_lookup(self, url):
-        with patch.object(AccessTokens, "token") as token:
+        with patch.object(AccessTokens, "token_result") as token_result:
             with pytest.raises(ValueError):
                 Authorization.header(url)
 
-        token.assert_not_called()
+        token_result.assert_not_called()
 
 
 class TestTheError:
@@ -194,7 +299,32 @@ class TestTheError:
 
         assert again.base_url == PROVIDER
         assert again.failure == failure
+        assert again.status == 401
         assert str(again) == str(TokenUnavailableError(PROVIDER, failure))
+
+
+    def test_a_hand_built_error_without_a_failure_still_renders(self):
+        error = TokenUnavailableError(PROVIDER)
+
+        assert error.failure is None
+        assert error.outcome is None
+        assert error.status is None
+        assert str(error) == (
+            f"Could not mint an EndPointBlank access token for {PROVIDER}: the reason is unknown. "
+            "EndPointBlank never sends this service's client_id/client_secret to a provider, so "
+            "there is no Basic-auth fallback and the call must not be made without a token."
+        )
+
+    def test_the_message_is_exactly_the_published_one(self):
+        error = TokenUnavailableError(PROVIDER, REJECTED)
+
+        assert str(error) == (
+            f"Could not mint an EndPointBlank access token for {PROVIDER}: EndPointBlank rejected "
+            "this service's credential (HTTP 401); the client_id/client_secret is invalid or "
+            "revoked and must be re-issued. EndPointBlank never sends this service's "
+            "client_id/client_secret to a provider, so there is no Basic-auth fallback and the "
+            "call must not be made without a token."
+        )
 
 
 class TestOwnIntakeCallsStillUseBasic:
@@ -205,10 +335,10 @@ class TestOwnIntakeCallsStillUseBasic:
         assert decoded == "test-client-id:test-client-secret"
 
     def test_the_intake_header_is_basic_and_mints_nothing(self):
-        with patch.object(AccessTokens, "token") as token:
+        with patch.object(AccessTokens, "token_result") as token_result:
             assert Authorization._intake_header() == BASIC
 
-        token.assert_not_called()
+        token_result.assert_not_called()
 
     def test_the_writers_the_authenticate_and_the_endpoint_update_present_basic(self, wire_with):
         wire = wire_with(response(201, {}))

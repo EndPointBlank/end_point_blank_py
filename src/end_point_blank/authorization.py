@@ -50,11 +50,15 @@ class Authorization:
         # Deferred to break the Authorization -> AccessTokens ->
         # GenerateAccessToken -> Authorization import cycle.
         from .tokens.access_tokens import AccessTokens
-        tokens = AccessTokens()
-        token = tokens.token(base_url)
-        if token:
-            return f"Bearer {token}"
-        raise TokenUnavailableError(base_url, tokens.last_failure(base_url))
+        from .tokens.token_result import TokenOutcome
+        # token_result, not token() then last_failure(): the failure record is
+        # shared per target and read outside the lock, so another thread could
+        # overwrite or clear it in between and this call would report someone
+        # else's reason. This result was captured under the lock for this call.
+        result = AccessTokens().token_result(base_url)
+        if result.outcome is TokenOutcome.SUCCESS:
+            return f"Bearer {result.payload['token']}"
+        raise TokenUnavailableError(base_url, result)
 
     @classmethod
     def _intake_header(cls) -> str:

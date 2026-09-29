@@ -209,10 +209,11 @@ EndPointBlank is unreachable or times out, it rejects the credential (401), the 
 registered environment (4xx), or it fails (5xx) — `header` raises
 `end_point_blank.TokenUnavailableError` instead of falling back to HTTP Basic. The message says the
 token could not be minted and why; `error.base_url` is the URL you asked about, `error.failure` is
-the recorded `TokenResult` (or `None`), and `error.outcome` its `TokenOutcome`, so you can decide
-whether a retry can help (`TRANSPORT_ERROR`, `SERVER_ERROR`) or not (`CREDENTIAL_REJECTED`,
-`REQUEST_REJECTED`). An empty or missing `base_url` raises `ValueError`; there is no no-argument
-form.
+the `TokenResult` of the mint made for this call, `error.outcome` its `TokenOutcome` and
+`error.status` its HTTP status (`None` when nothing answered), so you can decide whether a retry
+can help (`TRANSPORT_ERROR`, `SERVER_ERROR`) or not (`CREDENTIAL_REJECTED`, `REQUEST_REJECTED`).
+There is no no-argument form: calling `header()` with no argument raises `TypeError`, and
+`header(None)` or `header("")` raises `ValueError`.
 
 The argument is the URL you are about to call. Intake matches it against the registered base
 URLs by longest path prefix, so you do not need to know how the target registered itself —

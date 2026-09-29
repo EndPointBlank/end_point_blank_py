@@ -36,16 +36,21 @@ class TokenUnavailableError(Exception):
     provider is not EndPointBlank and must never see the credential.
 
     :ivar base_url: The URL a token was requested for.
-    :ivar failure: The recorded
-        :class:`~end_point_blank.tokens.token_result.TokenResult` explaining the
-        failed mint, or ``None`` if none was recorded (for example, another
-        thread's successful mint cleared it in between).
+    :ivar failure: The
+        :class:`~end_point_blank.tokens.token_result.TokenResult` of the failed
+        mint made for this call. ``Authorization.header`` always supplies it;
+        it is ``None`` only when the error is constructed without one.
+    :ivar status: ``failure.status`` -- the HTTP status intake answered the
+        mint with -- or ``None`` when no response arrived or there is no
+        failure. Distinguishes, say, a 400 from a 422 inside
+        :attr:`~TokenOutcome.REQUEST_REJECTED`.
     """
 
     def __init__(self, base_url: str, failure: Optional[TokenResult] = None) -> None:
         super().__init__(self._message(base_url, failure))
         self.base_url = base_url
         self.failure = failure
+        self.status: Optional[int] = failure.status if failure is not None else None
 
     @property
     def outcome(self) -> Optional[TokenOutcome]:
@@ -73,7 +78,9 @@ class TokenUnavailableError(Exception):
 
 def _reason(failure: Optional[TokenResult]) -> str:
     if failure is None:
-        return "no reason was recorded"
+        # Unreachable from Authorization.header, which always passes the result
+        # of its own mint; kept so a hand-built error still renders.
+        return "the reason is unknown"
     if failure.outcome is TokenOutcome.CREDENTIAL_REJECTED:
         return (
             "EndPointBlank rejected this service's credential (HTTP 401); the "

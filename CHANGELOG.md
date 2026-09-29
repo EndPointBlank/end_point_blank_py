@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-### Changed
+### Breaking changes
 
 - **Breaking: `Authorization.header` never falls back to HTTP Basic, and raises
   `TokenUnavailableError` when no token can be minted (sc-1469).** Earlier versions answered
@@ -19,14 +19,22 @@
 
   The error's message says the token could not be minted, why (unreachable/timeout, credential
   rejected, HTTP status and detail), and that credentials are never sent to providers. It carries
-  `base_url`, `failure` (the recorded `TokenResult`, or `None`) and `outcome` (its
-  `TokenOutcome`), and is exported from the package root.
+  `base_url`, `failure` (the `TokenResult` of the mint made for this call), `outcome` (its
+  `TokenOutcome`) and `status` (its HTTP status, or `None`), and is exported from the package
+  root. The reason is the one captured for this call: `AccessTokens.token_result(base_url)`
+  answers it, so a concurrent mint on another thread cannot swap in its own reason.
+  `AccessTokens.token` and `last_failure` behave as before.
 
   **What to change:** always pass the URL you are about to call; catch `TokenUnavailableError`
   where you call `header` and fail or retry the outbound call rather than sending it — never
   build a Basic header yourself as a replacement. If you called `header()` with no argument to
   talk to EndPointBlank directly, the SDK's own intake calls (authorize, token minting, endpoint
   registration, the writers) still use Basic through an internal helper and need nothing from you.
+
+- **`BearerGenerate` is deprecated (sc-1469).** `BearerGenerate.generate()` and
+  `BearerGenerate.auth_header()` now emit a `DeprecationWarning`: the header they build carries
+  this service's own `client_id`/`client_secret` and is only valid for its own EndPointBlank
+  intake. Never send it to a provider; use `Authorization.header(base_url)`.
 
 ## 0.11.0
 
