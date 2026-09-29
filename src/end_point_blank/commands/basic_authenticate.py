@@ -43,10 +43,8 @@ class BasicAuthenticate:
         method = environ.get("REQUEST_METHOD")
         path_info = environ.get("PATH_INFO", "")
 
-        logger.info(
-            "Authenticating request: %s %s with client_auth: %s",
-            method, path_info, client_auth,
-        )
+        # Never log client_auth: it is the caller's raw Authorization header (sc-1469).
+        logger.info("Authenticating request: %s %s", method, path_info)
 
         # These are the names intake reads on POST /api/authorize, and the same
         # ones EndpointAuthorize sends to that same URL. http_method is not
