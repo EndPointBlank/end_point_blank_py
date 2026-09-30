@@ -167,3 +167,14 @@ class TestTheResult:
             BasicAuthenticate.authenticate(environ(), "/students", "1")
 
         assert post.call_count == 2
+
+
+class TestLogging:
+    def test_never_logs_the_callers_authorization_header(self, caplog):
+        # sc-1469: this line used to print the raw header, credentials included.
+        caplog.set_level("DEBUG")
+        with patch.object(ba, "post", return_value=response()):
+            BasicAuthenticate.authenticate(environ(), "/students/{id}", "1")
+
+        assert "Authenticating request: GET /students/5" in caplog.text
+        assert "Y2xpZW50" not in caplog.text

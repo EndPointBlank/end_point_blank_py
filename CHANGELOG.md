@@ -36,6 +36,16 @@
   this service's own `client_id`/`client_secret` and is only valid for its own EndPointBlank
   intake. Never send it to a provider; use `Authorization.header(base_url)`.
 
+### Security
+
+- **The authenticate command no longer logs the caller's `Authorization`
+  header (sc-1469).** Earlier versions wrote `Authenticating request: <method>
+  <path> with client_auth: <header>` at INFO for every authenticated request,
+  so a caller's Basic `client_id:secret` or bearer token landed in the host
+  application's logs. The line now carries only the method and path. If you
+  ran an earlier version with INFO logging on, scrub those log lines and
+  rotate any client secrets that appear in them.
+
 ## 0.11.0
 
 ### Changed
