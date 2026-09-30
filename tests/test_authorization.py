@@ -62,9 +62,11 @@ class Wire:
     def __init__(self, mint):
         self._mint = mint
         self.sent = []
+        self.bodies = []
 
     def post(self, url, json=None, headers=None, timeout=None):
         self.sent.append((url, dict(headers or {})))
+        self.bodies.append(json)
         if not is_provider(url):
             if isinstance(self._mint, Exception):
                 raise self._mint
@@ -140,12 +142,12 @@ class TestNoTokenMeansNoCall:
     @pytest.mark.parametrize(
         "mint, outcome, reason",
         [
-            (response(500, {"error": "boom"}), TokenOutcome.SERVER_ERROR, "HTTP 500: boom"),
-            (response(422, {"error": "no environment"}), TokenOutcome.REQUEST_REJECTED, "HTTP 422"),
-            (response(401, {"error": "invalid"}), TokenOutcome.CREDENTIAL_REJECTED, "rejected this service's credential"),
-            (requests.Timeout("read timed out"), TokenOutcome.TRANSPORT_ERROR, "could not be reached"),
-            (requests.ConnectionError("refused"), TokenOutcome.TRANSPORT_ERROR, "could not be reached"),
-            (response(201, {"expired_at": "2099-01-01T00:00:00Z"}), TokenOutcome.SERVER_ERROR, "no token in response"),
+            (response(500, {"error": "boom"}), TokenOutcome.SERVER_ERROR, "intake failed to issue a token (HTTP 500)"),
+            (response(422, {"error": "no environment"}), TokenOutcome.REQUEST_REJECTED, "intake refused the token request (HTTP 422)"),
+            (response(401, {"error": "invalid"}), TokenOutcome.CREDENTIAL_REJECTED, "intake rejected this application's client credential (HTTP 401)"),
+            (requests.Timeout("read timed out"), TokenOutcome.TRANSPORT_ERROR, "intake could not be reached"),
+            (requests.ConnectionError("refused"), TokenOutcome.TRANSPORT_ERROR, "intake could not be reached"),
+            (response(201, {"expired_at": "2099-01-01T00:00:00Z"}), TokenOutcome.SERVER_ERROR, "intake failed to issue a token (HTTP 201)"),
         ],
         ids=["5xx", "4xx", "401", "timeout", "connection-refused", "2xx-without-token"],
     )
@@ -162,6 +164,9 @@ class TestNoTokenMeansNoCall:
         assert message.startswith(f"Could not mint an EndPointBlank access token for {PROVIDER}: ")
         assert reason in message
         assert "never sends this service's client_id/client_secret to a provider" in message
+        # intake's body text and the exception's text are not the message's to repeat.
+        for body_text in ("boom", "no environment", "invalid", "timed out", "refused;"):
+            assert body_text not in message
 
         assert wire.provider_requests() == []
         for url, headers in wire.sent:
@@ -193,6 +198,63 @@ class TestNoTokenMeansNoCall:
             Authorization.header(PROVIDER)
 
         assert raised.value.status is None
+
+    def test_a_mint_that_raises_is_a_transport_error_with_the_cause(self, wire_with):
+        wire = wire_with(response(201, {}))
+        boom = RuntimeError("secret-bearing detail")
+
+        with patch.object(GenerateAccessToken, "token_result", side_effect=boom):
+            with pytest.raises(TokenUnavailableError) as raised:
+                call_provider(wire)
+
+        error = raised.value
+        assert error.outcome is TokenOutcome.TRANSPORT_ERROR
+        assert error.status is None
+        assert error.cause is boom
+        assert error.__cause__ is boom
+        assert "the token request failed unexpectedly" in str(error)
+        assert "secret-bearing detail" not in str(error)
+        assert "RuntimeError" not in str(error)
+        assert wire.sent == []
+
+
+class TestUserinfoQueryAndFragmentAreStripped:
+    """sc-1469 review: they can carry a secret, and intake's base-URL
+    normalizer refuses any of them with a 422 -- so they are removed before the
+    mint, and kept nowhere on the error."""
+
+    RAW = PROVIDER.replace("https://", "https://user:hunter2@") + "?api_key=s3cret#frag"
+
+    def test_the_mint_succeeds_and_intake_sees_only_the_stripped_url(self, wire_with):
+        wire = wire_with(response(201, {"token": "tok-abc", "base_url": PROVIDER,
+                                        "expired_at": "2099-01-01T00:00:00Z"}))
+
+        assert Authorization.header(self.RAW) == "Bearer tok-abc"
+
+        [(url, _)] = wire.sent
+        assert url == f"{INTAKE}/api/access_token"
+        assert wire.bodies == [{"base_url": PROVIDER}]
+
+    def test_the_error_carries_only_the_stripped_url(self, wire_with):
+        wire_with(response(422, {"error": "no environment"}))
+
+        with pytest.raises(TokenUnavailableError) as raised:
+            Authorization.header(self.RAW)
+
+        assert raised.value.base_url == PROVIDER
+        for secret in ("hunter2", "s3cret", "frag"):
+            assert secret not in str(raised.value)
+            assert secret not in repr(vars(raised.value))
+
+    @pytest.mark.parametrize("url", ["not a url ?token=s3cret", "https:///orders", "https://h:x/"])
+    def test_an_unparseable_url_makes_no_request(self, wire_with, url):
+        wire = wire_with(response(201, {}))
+
+        with pytest.raises(ValueError) as raised:
+            Authorization.header(url)
+
+        assert "s3cret" not in str(raised.value)
+        assert wire.sent == []
 
 
 REJECTED = TokenResult(TokenOutcome.CREDENTIAL_REJECTED, 401, {"error": "invalid"})
@@ -262,10 +324,10 @@ class TestTheReasonBelongsToThisCall:
         # The shared record now says something else (or nothing) ...
         assert AccessTokens().last_failure(PROVIDER) == left_behind
         # ... but this call reports its own 401.
-        assert raised.value.failure == REJECTED
+        assert raised.value.failure == TokenResult(TokenOutcome.CREDENTIAL_REJECTED, 401)
         assert raised.value.outcome is TokenOutcome.CREDENTIAL_REJECTED
         assert raised.value.status == 401
-        assert "rejected this service's credential" in str(raised.value)
+        assert "intake rejected this application's client credential" in str(raised.value)
 
     def test_token_and_last_failure_keep_their_behaviour(self):
         with patch.object(GenerateAccessToken, "token_result", return_value=REJECTED):
@@ -298,10 +360,29 @@ class TestTheError:
         again = pickle.loads(pickle.dumps(TokenUnavailableError(PROVIDER, failure)))
 
         assert again.base_url == PROVIDER
-        assert again.failure == failure
+        assert again.failure == TokenResult(TokenOutcome.CREDENTIAL_REJECTED, 401)
         assert again.status == 401
         assert str(again) == str(TokenUnavailableError(PROVIDER, failure))
 
+    def test_a_pickled_cause_keeps_the_unexpected_failure_text(self):
+        error = TokenUnavailableError(
+            PROVIDER, TokenResult(TokenOutcome.TRANSPORT_ERROR), cause=RuntimeError("x")
+        )
+        again = pickle.loads(pickle.dumps(error))
+
+        assert str(again) == str(error)
+        assert isinstance(again.cause, RuntimeError)
+
+    def test_the_failure_is_kept_without_its_payload(self):
+        # A 2xx with a token but no base_url is a SERVER_ERROR whose payload
+        # holds a live token; intake's error body is not the error's to keep.
+        leaky = TokenResult(TokenOutcome.SERVER_ERROR, 201, {"token": "live-token"})
+
+        error = TokenUnavailableError(PROVIDER, leaky)
+
+        assert error.failure == TokenResult(TokenOutcome.SERVER_ERROR, 201)
+        assert error.failure.payload is None
+        assert "live-token" not in repr(vars(error))
 
     def test_a_hand_built_error_without_a_failure_still_renders(self):
         error = TokenUnavailableError(PROVIDER)
@@ -310,20 +391,41 @@ class TestTheError:
         assert error.outcome is None
         assert error.status is None
         assert str(error) == (
-            f"Could not mint an EndPointBlank access token for {PROVIDER}: the reason is unknown. "
+            f"Could not mint an EndPointBlank access token for {PROVIDER}: the token request "
+            "failed for an unknown reason. "
             "EndPointBlank never sends this service's client_id/client_secret to a provider, so "
             "there is no Basic-auth fallback and the call must not be made without a token."
         )
 
-    def test_the_message_is_exactly_the_published_one(self):
-        error = TokenUnavailableError(PROVIDER, REJECTED)
+    @pytest.mark.parametrize(
+        "failure, cause, reason",
+        [
+            (REJECTED, None,
+             "intake rejected this application's client credential (HTTP 401); retrying cannot "
+             "help -- re-issue the credential"),
+            (TokenResult(TokenOutcome.REQUEST_REJECTED, 422, {"error": "no environment"}), None,
+             "intake refused the token request (HTTP 422); check the URL and that a grant "
+             "covers the target"),
+            (BROKEN, None, "intake failed to issue a token (HTTP 500); this may be transient"),
+            (TokenResult(TokenOutcome.SERVER_ERROR), None,
+             "intake failed to issue a token; this may be transient"),
+            (TokenResult(TokenOutcome.TRANSPORT_ERROR), None,
+             "intake could not be reached (timeout, connection refused or retries exhausted); "
+             "this may be transient"),
+            (TokenResult(TokenOutcome.TRANSPORT_ERROR), RuntimeError("boom"),
+             "the token request failed unexpectedly"),
+            (None, None, "the token request failed for an unknown reason"),
+        ],
+        ids=["credential_rejected", "request_rejected", "server_error",
+             "server_error-without-status", "transport_error", "mint-raised", "no-result"],
+    )
+    def test_the_message_is_exactly_the_published_one(self, failure, cause, reason):
+        error = TokenUnavailableError(PROVIDER, failure, cause=cause)
 
         assert str(error) == (
-            f"Could not mint an EndPointBlank access token for {PROVIDER}: EndPointBlank rejected "
-            "this service's credential (HTTP 401); the client_id/client_secret is invalid or "
-            "revoked and must be re-issued. EndPointBlank never sends this service's "
-            "client_id/client_secret to a provider, so there is no Basic-auth fallback and the "
-            "call must not be made without a token."
+            f"Could not mint an EndPointBlank access token for {PROVIDER}: {reason}. "
+            "EndPointBlank never sends this service's client_id/client_secret to a provider, "
+            "so there is no Basic-auth fallback and the call must not be made without a token."
         )
 
 

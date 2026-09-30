@@ -1,8 +1,9 @@
 """
 The error raised when no access token can be obtained for an outbound call.
 
-Imports nothing from the package at module level, like
-:mod:`~end_point_blank.tokens.token_result`, so both
+Imports only modules that import nothing from the package
+(:mod:`~end_point_blank.tokens.token_result`,
+:mod:`~end_point_blank.strip_url`), so both
 :class:`~end_point_blank.authorization.Authorization` and callers can import it
 without joining the ``Authorization`` -> ``AccessTokens`` ->
 ``GenerateAccessToken`` cycle.
@@ -10,8 +11,8 @@ without joining the ``Authorization`` -> ``AccessTokens`` ->
 from __future__ import annotations
 
 from typing import Optional
-from urllib.parse import urlsplit
 
+from .strip_url import strip_url
 from .tokens.token_result import TokenOutcome, TokenResult
 
 # The one sentence every instance carries. It is the rule, not a detail: an
@@ -36,22 +37,45 @@ class TokenUnavailableError(Exception):
     It now refuses instead. Do not catch this and send Basic yourself: the
     provider is not EndPointBlank and must never see the credential.
 
-    :ivar base_url: The URL a token was requested for.
-    :ivar failure: The
-        :class:`~end_point_blank.tokens.token_result.TokenResult` of the failed
-        mint made for this call. ``Authorization.header`` always supplies it;
-        it is ``None`` only when the error is constructed without one.
+    :ivar base_url: The URL a token was requested for, stripped to scheme,
+        host, port and path (see :func:`~end_point_blank.strip_url.strip_url`),
+        or ``None`` when it could not be parsed. Userinfo, query and fragment
+        can carry a secret, and error reporters capture an exception's
+        attributes as well as its message, so they are kept nowhere on the
+        error; the caller already has the URL it passed.
+    :ivar failure: The outcome and HTTP status of the failed mint made for
+        this call, as a
+        :class:`~end_point_blank.tokens.token_result.TokenResult` without its
+        payload: a 2xx that could not be keyed carries a live token, and
+        intake's body text is not this error's to repeat.
+        ``Authorization.header`` always supplies it; it is ``None`` only when
+        the error is constructed without one.
     :ivar status: ``failure.status`` -- the HTTP status intake answered the
         mint with -- or ``None`` when no response arrived or there is no
         failure. Distinguishes, say, a 400 from a 422 inside
         :attr:`~TokenOutcome.REQUEST_REJECTED`.
+
+    A mint that raised is reported as :attr:`~TokenOutcome.TRANSPORT_ERROR`
+    with the exception as ``cause`` (and ``__cause__``); its text is
+    deliberately not copied into the message.
     """
 
-    def __init__(self, base_url: str, failure: Optional[TokenResult] = None) -> None:
-        super().__init__(self._message(base_url, failure))
-        self.base_url = base_url
-        self.failure = failure
+    def __init__(
+        self,
+        base_url: Optional[str],
+        failure: Optional[TokenResult] = None,
+        cause: Optional[BaseException] = None,
+    ) -> None:
+        stripped = strip_url(base_url)
+        super().__init__(self._message(stripped, failure, cause))
+        self.base_url = stripped
+        self.failure = (
+            TokenResult(failure.outcome, failure.status) if failure is not None else None
+        )
         self.status: Optional[int] = failure.status if failure is not None else None
+        self.cause = cause
+        if cause is not None:
+            self.__cause__ = cause
 
     @property
     def outcome(self) -> Optional[TokenOutcome]:
@@ -67,45 +91,52 @@ class TokenUnavailableError(Exception):
     def __reduce__(self):
         # Exception's default rebuilds from self.args (the message) alone, which
         # would pass the message in as base_url and lose the failure.
-        return (self.__class__, (self.base_url, self.failure))
+        return (self.__class__, (self.base_url, self.failure, self.cause))
 
     @staticmethod
-    def _message(base_url: str, failure: Optional[TokenResult]) -> str:
+    def _message(
+        stripped: Optional[str], failure: Optional[TokenResult], cause: Optional[BaseException]
+    ) -> str:
         return (
-            f"Could not mint an EndPointBlank access token for {_describe_url(base_url)}: "
-            f"{_reason(failure)}. {CREDENTIALS_NEVER_SENT}"
+            f"Could not mint an EndPointBlank access token for {_describe_url(stripped)}: "
+            f"{_reason(failure, cause)}. {CREDENTIALS_NEVER_SENT}"
         )
 
 
-def _describe_url(base_url) -> str:
-    """The URL as the message may show it: scheme, host and path only.
-
-    The caller controls ``base_url``, and its userinfo, query or fragment can
-    carry a secret; the message is what reaches logs and error reporting, so
-    they are dropped here. The raw value stays on ``base_url``.
-    """
-    try:
-        parts = urlsplit(str(base_url))
-        host = parts.netloc.rpartition("@")[2]
-    except ValueError:
-        parts, host = None, ""
-    if parts is None or not parts.scheme or not host:
+def _describe_url(stripped: Optional[str]) -> str:
+    """The stripped URL, or a fixed phrase when there is none to show."""
+    if stripped is None:
         return "the requested URL (not shown: it could not be parsed)"
-    return f"{parts.scheme}://{host}{parts.path}"
+    return stripped
 
 
-def _reason(failure: Optional[TokenResult]) -> str:
+def _reason(failure: Optional[TokenResult], cause: Optional[BaseException]) -> str:
+    """The same fixed texts in every SDK (sc-1469). Never intake's response body
+    or an exception's message or class name: neither is ours to vouch for, and
+    either may carry anything."""
+    # Before the outcome, because a mint that raised is also TRANSPORT_ERROR.
+    if cause is not None:
+        return "the token request failed unexpectedly"
     if failure is None:
         # Unreachable from Authorization.header, which always passes the result
         # of its own mint; kept so a hand-built error still renders.
-        return "the reason is unknown"
+        return "the token request failed for an unknown reason"
+    http = f" (HTTP {failure.status})" if failure.status is not None else ""
     if failure.outcome is TokenOutcome.CREDENTIAL_REJECTED:
         return (
-            "EndPointBlank rejected this service's credential (HTTP 401); the "
-            "client_id/client_secret is invalid or revoked and must be re-issued"
+            f"intake rejected this application's client credential{http}; "
+            "retrying cannot help -- re-issue the credential"
         )
+    if failure.outcome is TokenOutcome.REQUEST_REJECTED:
+        return (
+            f"intake refused the token request{http}; check the URL and that a "
+            "grant covers the target"
+        )
+    if failure.outcome is TokenOutcome.SERVER_ERROR:
+        return f"intake failed to issue a token{http}; this may be transient"
     if failure.outcome is TokenOutcome.TRANSPORT_ERROR:
-        return "EndPointBlank could not be reached (network error or timeout)"
-    # Deferred so importing this error never loads the token cache.
-    from .tokens.access_tokens import AccessTokens
-    return AccessTokens._failure_reason(failure)
+        return (
+            "intake could not be reached (timeout, connection refused or retries "
+            "exhausted); this may be transient"
+        )
+    return "the token request failed for an unknown reason"

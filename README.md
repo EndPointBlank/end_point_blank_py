@@ -194,7 +194,8 @@ from end_point_blank.authorization import Authorization
 from end_point_blank import TokenUnavailableError
 
 # Pass the URL you are about to call, NOT a hostname.
-# Strip any query string or fragment first -- intake rejects both.
+# userinfo, query and fragment are removed before the token request; they are
+# never sent to intake, logged, or kept on the error.
 try:
     auth = Authorization.header("https://api.example.com/orders")  # "Bearer <token>"
 except TokenUnavailableError as error:
@@ -208,17 +209,22 @@ except TokenUnavailableError as error:
 EndPointBlank is unreachable or times out, it rejects the credential (401), the URL resolves to no
 registered environment (4xx), or it fails (5xx) — `header` raises
 `end_point_blank.TokenUnavailableError` instead of falling back to HTTP Basic. The message says the
-token could not be minted and why; `error.base_url` is the URL you asked about, `error.failure` is
-the `TokenResult` of the mint made for this call, `error.outcome` its `TokenOutcome` and
-`error.status` its HTTP status (`None` when nothing answered), so you can decide whether a retry
-can help (`TRANSPORT_ERROR`, `SERVER_ERROR`) or not (`CREDENTIAL_REJECTED`, `REQUEST_REJECTED`).
+token could not be minted and why, in fixed words -- never intake's response body or an exception's
+text. `error.base_url` is the URL you asked about, stripped to scheme, host, port and path;
+`error.failure` is the outcome and status of the mint made for this call (a `TokenResult` without
+its payload), `error.outcome` its `TokenOutcome` and `error.status` its HTTP status (`None` when
+nothing answered), so you can decide whether a retry can help (`TRANSPORT_ERROR`, `SERVER_ERROR`)
+or not (`CREDENTIAL_REJECTED`, `REQUEST_REJECTED`). A mint that raised is a `TRANSPORT_ERROR`
+whose exception is `error.cause` (and `__cause__`).
 There is no no-argument form: calling `header()` with no argument raises `TypeError`, and
-`header(None)` or `header("")` raises `ValueError`.
+`header(None)`, `header("")` or a URL with no scheme or host raises `ValueError` without making a
+request.
 
 The argument is the URL you are about to call. Intake matches it against the registered base
 URLs by longest path prefix, so you do not need to know how the target registered itself —
-`https://api.example.com/orders/widgets/42` resolves to whichever environment owns it. Query
-strings and fragments must be removed.
+`https://api.example.com/orders/widgets/42` resolves to whichever environment owns it. Userinfo,
+query and fragment are removed before the token request; they are never sent to intake, logged, or
+kept on the error.
 
 Tokens are cached per application environment, keyed on the canonical base URL intake resolves
 the request to (not on the URL you passed), so a service that calls several targets holds a
@@ -547,6 +553,7 @@ src/end_point_blank/
 ├── request_store.py         # Thread-local current-request store
 ├── unauthorized_error.py    # UnauthorizedError
 ├── token_unavailable_error.py # TokenUnavailableError (no token for a provider call)
+├── strip_url.py             # strip_url: drops userinfo/query/fragment before a token request
 ├── log_entry.py             # LogEntry value object
 ├── middleware/               # WSGI middleware (ReportInteractionMiddleware)
 ├── writers/                  # RequestWriter, ResponseWriter, ExceptionWriter, LogWriter,

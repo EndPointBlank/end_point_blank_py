@@ -61,6 +61,24 @@ class TestTheRequest:
 
         assert post.call_args[0][2]["base_url"] == messy
 
+    def test_sends_no_userinfo_query_or_fragment(self):
+        # sc-1469: any of them can carry a secret, and intake refuses a
+        # base_url carrying one (422), so they never go on the wire.
+        raw = "https://user:hunter2@API.Example.com:8443/Orders/?api_key=s3cret#frag"
+
+        with patch.object(gat, "post", return_value=response()) as post:
+            GenerateAccessToken.token(raw)
+
+        assert post.call_args[0][2]["base_url"] == "https://API.Example.com:8443/Orders/"
+
+    def test_an_unparseable_url_makes_no_request(self):
+        with patch.object(gat, "post", return_value=response()) as post:
+            assert GenerateAccessToken.token("not a url ?token=s3cret") is None
+            with pytest.raises(ValueError):
+                GenerateAccessToken.token_result(None)
+
+        post.assert_not_called()
+
     def test_omits_the_ttl_when_none_is_configured(self):
         # Intake picks its own default TTL when the key is absent; sending an
         # explicit null would be a different request.

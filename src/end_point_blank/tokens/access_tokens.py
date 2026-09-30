@@ -5,6 +5,7 @@ import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from ..strip_url import strip_url
 from .token_result import TokenOutcome, TokenResult
 
 logger = logging.getLogger(__name__)
@@ -82,15 +83,21 @@ class AccessTokens:
         Returns a valid access token for *base_url*, fetching one if no usable
         entry covers it.
 
-        :param base_url: The URL you are about to call, with any query string
-            and fragment removed. It is sent verbatim; intake normalizes it and
-            matches it against registered base URLs by longest path prefix.
+        :param base_url: The URL you are about to call. Userinfo, query and
+            fragment are removed (see :func:`~end_point_blank.strip_url.strip_url`);
+            the rest is sent as written, and intake normalizes it and matches
+            it against registered base URLs by longest path prefix.
         :returns: The access token string, or ``None`` if generation failed --
-            which includes a response that carried a token but no ``base_url``.
+            which includes a response that carried a token but no ``base_url``,
+            and a URL with no scheme or host, for which no request is made.
             ``None`` says nothing about *why*; call :meth:`token_result` to get
             the reason for this very call, or :meth:`last_failure` to find out
             whether the credential was rejected or intake was simply down.
         """
+        if strip_url(base_url) is None:
+            # Published as None-on-failure, so an unusable URL answers None
+            # here; token_result is where it raises.
+            return None
         result = self.token_result(base_url)
         return result.payload["token"] if result.outcome is TokenOutcome.SUCCESS else None
 
@@ -111,7 +118,19 @@ class AccessTokens:
             carries ``token``, ``base_url`` (the canonical key it is cached
             under) and ``expired_at`` -- ``status`` is ``None`` when it was
             served from the cache -- or the failed mint's result.
+        :raises ValueError: when *base_url* is not an absolute URL with a scheme
+            and host. No request is made.
         """
+        # Stripped once, here, so the cache and failure keys, the mint and the
+        # log lines below all see the same form -- never the userinfo, query
+        # or fragment the caller passed.
+        url = strip_url(base_url)
+        if url is None:
+            # The URL is left out of the message: it could not be parsed, so
+            # there is no telling which part of it is a secret.
+            raise ValueError("an access token needs an absolute URL with a scheme and host")
+        base_url = url
+
         cached = self._cached_result(base_url)
         if cached is not None:
             return cached
@@ -195,8 +214,12 @@ class AccessTokens:
             return result
 
     def exists(self, base_url: str) -> bool:
-        """Returns ``True`` if a token covering *base_url* has 30+ seconds left."""
-        entry = self._match(base_url)
+        """Returns ``True`` if a token covering *base_url* has 30+ seconds left.
+
+        *base_url* is stripped as :meth:`token_result` strips it; one with no
+        scheme or host is covered by nothing.
+        """
+        entry = self._match(strip_url(base_url))
         return bool(entry and entry["expired_at"] > datetime.now(tz=timezone.utc) + _MIN_TTL)
 
     def last_failure(self, base_url: str) -> Optional[TokenResult]:
@@ -227,14 +250,16 @@ class AccessTokens:
         about another, since a process can hold tokens for several environments.
         Only the most recent ``_FAILURE_CAP`` targets are kept -- see the cap.
 
-        :param base_url: The URL you asked for a token for.
+        :param base_url: The URL you asked for a token for, stripped as
+            :meth:`token_result` strips it; one with no scheme or host matches
+            nothing.
         :returns: The recorded
             :class:`~end_point_blank.tokens.token_result.TokenResult`, or
             ``None`` if nothing covering *base_url* has failed since the last
             success.
         """
         failures = self._failures  # One atomic read; writes replace, never mutate.
-        key = self._match_key(base_url, failures)
+        key = self._match_key(strip_url(base_url), failures)
         return failures.get(key) if key is not None else None
 
     def invalidate(self, stale_token: Optional[str]) -> None:

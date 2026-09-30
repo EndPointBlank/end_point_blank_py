@@ -16,14 +16,30 @@
   | `Authorization.header(url)`, token available | `"Bearer <token>"` | same |
   | `Authorization.header(url)`, no token | raises `end_point_blank.TokenUnavailableError` | `"Basic <client_id:secret>"` |
   | `Authorization.header()` / `header(None)` / `header("")` | `TypeError` / `ValueError` | `"Basic <client_id:secret>"` |
+  | `Authorization.header(url)`, `url` has no scheme or host | `ValueError`, no request | a mint attempt |
 
   The error's message says the token could not be minted, why (unreachable/timeout, credential
-  rejected, HTTP status and detail), and that credentials are never sent to providers. It carries
-  `base_url`, `failure` (the `TokenResult` of the mint made for this call), `outcome` (its
-  `TokenOutcome`) and `status` (its HTTP status, or `None`), and is exported from the package
-  root. The reason is the one captured for this call: `AccessTokens.token_result(base_url)`
-  answers it, so a concurrent mint on another thread cannot swap in its own reason.
-  `AccessTokens.token` and `last_failure` behave as before.
+  rejected, request refused, server error, each with its HTTP status when there is one), and that
+  credentials are never sent to providers. The reason is one of a fixed set of texts shared by
+  every EndPointBlank SDK: intake's response body, an exception's message and its class name are
+  never copied into it. It carries `base_url`, `failure` (the outcome and status of the mint made
+  for this call, as a `TokenResult` without its payload), `outcome` (its `TokenOutcome`) and
+  `status` (its HTTP status, or `None`), and is exported from the package root. A mint that raises
+  anything is reported as this error with outcome `TRANSPORT_ERROR`, the text "the token request
+  failed unexpectedly", and the exception as `cause`. The reason is the one captured for this
+  call: `AccessTokens.token_result(base_url)` answers it, so a concurrent mint on another thread
+  cannot swap in its own reason.
+
+  **userinfo, query and fragment are removed before the token request; they are never sent to
+  intake, logged, or kept on the error.** Any of them can carry a secret, and intake refuses a
+  `base_url` carrying one (422), so a URL with a query string could never be minted for anyway.
+  `Authorization.header`, `AccessTokens.token`, `token_result`, `exists` and `last_failure`, and
+  `GenerateAccessToken` all reduce the URL to scheme, host, port and path first, so cache and
+  failure keys and log lines use that form, and `error.base_url` holds it (`None` if the URL could
+  not be parsed). A URL with no scheme or host is refused before any request:
+  `AccessTokens.token_result` and `GenerateAccessToken.token_result` raise `ValueError`, while
+  `AccessTokens.token` and `GenerateAccessToken.token` answer `None` as they do for any failure.
+  `AccessTokens.token` and `last_failure` otherwise behave as before.
 
   **What to change:** always pass the URL you are about to call; catch `TokenUnavailableError`
   where you call `header` and fail or retry the outbound call rather than sending it — never
