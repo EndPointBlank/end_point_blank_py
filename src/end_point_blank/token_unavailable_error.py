@@ -10,6 +10,7 @@ without joining the ``Authorization`` -> ``AccessTokens`` ->
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import urlsplit
 
 from .tokens.token_result import TokenOutcome, TokenResult
 
@@ -71,9 +72,26 @@ class TokenUnavailableError(Exception):
     @staticmethod
     def _message(base_url: str, failure: Optional[TokenResult]) -> str:
         return (
-            f"Could not mint an EndPointBlank access token for {base_url}: "
+            f"Could not mint an EndPointBlank access token for {_describe_url(base_url)}: "
             f"{_reason(failure)}. {CREDENTIALS_NEVER_SENT}"
         )
+
+
+def _describe_url(base_url) -> str:
+    """The URL as the message may show it: scheme, host and path only.
+
+    The caller controls ``base_url``, and its userinfo, query or fragment can
+    carry a secret; the message is what reaches logs and error reporting, so
+    they are dropped here. The raw value stays on ``base_url``.
+    """
+    try:
+        parts = urlsplit(str(base_url))
+        host = parts.netloc.rpartition("@")[2]
+    except ValueError:
+        parts, host = None, ""
+    if parts is None or not parts.scheme or not host:
+        return "the requested URL (not shown: it could not be parsed)"
+    return f"{parts.scheme}://{host}{parts.path}"
 
 
 def _reason(failure: Optional[TokenResult]) -> str:
