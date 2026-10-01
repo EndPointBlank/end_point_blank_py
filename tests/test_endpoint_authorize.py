@@ -415,6 +415,47 @@ class TestFailureResponses:
             assert post.call_count == 1
 
 
+# sc-1463 conformance: intake answers 503 and 429 about the moment, not the
+# grant. Caching either would keep refusing for the whole TTL after intake
+# recovered.
+class TestA503OrA429FromIntake:
+    @pytest.mark.parametrize("status", [503, 429])
+    def test_is_not_cached_and_the_next_request_authorizes_once_intake_does(self, status):
+        with patch.object(ea, "post", return_value=response(status, {"error": "busy"}, "busy")):
+            assert EndpointAuthorize.authorize(environ(), "/students", "1").status_code == status
+
+        with patch.object(ea, "post", return_value=response(201)) as post:
+            assert EndpointAuthorize.authorize(environ(), "/students", "1").status_code == 201
+            assert post.call_count == 1
+
+
+# sc-1463: with derivation on, a prefixed client_id sends every intake call to
+# its organization's hostname; off, to the configured or default one.
+class TestTheIntakeItCalls:
+    PREFIXED = "acima-x7k2mq.ijXI+MVwmrC5xH/9ZuGiQlAbAyobTqMa"
+
+    @pytest.fixture(autouse=True)
+    def _no_env_base_url(self, monkeypatch):
+        monkeypatch.delenv("ENDPOINTBLANK_BASE_URL", raising=False)
+
+    def test_is_the_organizations_hostname_when_derivation_is_on_and_no_base_url_is_set(self, _credentials):
+        _credentials.client_id = self.PREFIXED
+        _credentials.derive_base_url_from_client_id = True
+
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert post.call_args[0][0] == "https://acima-x7k2mq.in.endpointblank.com/api/authorize"
+
+    def test_is_the_default_intake_when_derivation_is_off_whatever_the_client_id(self, _credentials):
+        _credentials.client_id = self.PREFIXED
+
+        with patch.object(ea, "post", return_value=response()) as post:
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert post.call_args[0][0] == "https://in.endpointblank.com/api/authorize"
+
+
 class TestTheHostnameItReports:
     def test_lowercases_it_and_strips_the_port(self):
         with patch.object(ea, "post", return_value=response()) as post:

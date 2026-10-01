@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 import requests
 from requests.adapters import HTTPAdapter
 
+from .. import VERSION
 from ..configuration_error import ConfigurationError
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,19 @@ TRANSPORT_ERRORS = (
 )
 
 
+def sdk_header() -> str:
+    """
+    The ``x-epb-sdk`` value sent on every call to intake: ``python/<version>``,
+    this library's ``VERSION`` (sc-1463). intake ignores it today; it is there
+    so intake can record the oldest version seen per credential for the move
+    gate. That gate's minimum Python version is the release that turns
+    ``derive_base_url_from_client_id`` on by default, not the one that added
+    this header: with the option at its default, this version keeps calling
+    ``in.endpointblank.com`` after its organization moves.
+    """
+    return f"python/{VERSION}"
+
+
 def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.Response]:
     """
     POST *body* as JSON to *url* with *auth_header*.
@@ -85,7 +99,11 @@ def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.
             return _session().post(
                 url,
                 json=body,
-                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                headers={
+                    "Authorization": auth_header,
+                    "Content-Type": "application/json",
+                    "x-epb-sdk": sdk_header(),
+                },
                 timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
             )
         except TRANSPORT_ERRORS as exc:

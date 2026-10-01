@@ -84,6 +84,45 @@
   this service's own `client_id`/`client_secret` and is only valid for its own EndPointBlank
   intake. Never send it to a provider; use `Authorization.header(base_url)`.
 
+### Added
+
+- **The intake hostname can be derived from `client_id` (sc-1463), off by
+  default.** New credentials carry their organization's slug as a prefix
+  (`acima-x7k2mq.<random>`), and that organization's intake answers at
+  `https://<slug>.in.endpointblank.com`. With the new
+  `configure(derive_base_url_from_client_id=True)`, the SDK calls that hostname
+  when neither `base_url` nor `ENDPOINTBLANK_BASE_URL` is set. It derives only
+  when the part before the first `.` has the exact shape of an organization
+  slug and something follows the dot
+  (`end_point_blank.configuration.client_id_slug`, the same rule as
+  app_portal's `Credentials.client_id_slug/1`); any other `client_id`,
+  including a legacy `my.client`, calls `https://in.endpointblank.com` as
+  before. The option defaults to `False` because `*.in.endpointblank.com` has
+  no DNS or TLS in production yet; with it off, every `client_id` resolves
+  exactly as in 0.11.0. It will default to `True` in a later release, once DNS
+  and TLS are live. A value other than `True` or `False` is refused by
+  `configure()` with `ValueError`, before any argument of that call is
+  applied, and by assignment to `Configuration().derive_base_url_from_client_id`.
+  `configure(derive_base_url_from_client_id=None)` is the same as leaving it
+  out, as for every argument except `cache_ttl`. The logs hostname
+  (`log_base_url`) is never derived.
+- **Every call to intake sends `x-epb-sdk: python/<version>` (sc-1463)**, with
+  this library's `VERSION`. intake ignores it today; it will record the oldest
+  version seen per credential for the move gate. **This release is not that
+  gate's minimum Python version:** derivation is off by default here, so a host
+  on this version with the default config keeps calling `in.endpointblank.com`
+  after its organization moves. The minimum is the release that turns
+  `derive_base_url_from_client_id` on by default.
+
+### Unchanged
+
+- A 503 or a 429 from intake is never cached (sc-1463 conformance, now pinned
+  by tests): the authorization cache stores only a 201, and the token cache
+  stores only a minted token, so the next call asks intake again. The token
+  cache is still keyed on the `base_url` the mint response returns, and a 2xx
+  without one is still a failed mint (`TokenOutcome.SERVER_ERROR` with the real
+  2xx status). intake sends `base_url` on every successful mint.
+
 ### Security
 
 - **The authenticate command no longer logs the caller's `Authorization`
