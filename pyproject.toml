@@ -5,16 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "end-point-blank-py"
 version = "0.11.0"
-description = "Python library for EndPointBlank API integration - endpoint tracking, authorization, and error reporting"
+description = "Python SDK for EndPointBlank (Django, Flask, WSGI): authorize service-to-service API calls, report endpoint versions, and see which clients still call deprecated API versions."
 authors = [{ name = "Robert A. Lasch", email = "rlasch@gmail.com" }]
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
 classifiers = [
     "License :: Other/Proprietary License",
 ]
+keywords = [
+    "endpointblank",
+    "api-versioning",
+    "api-deprecation",
+    "deprecation",
+    "sunset",
+    "api-lifecycle",
+    "machine-to-machine",
+    "m2m-auth",
+    "api-audit-log",
+    "django",
+    "flask",
+    "wsgi",
+]
 dependencies = [
     "requests>=2.33",
 ]
+
+[project.urls]
+Homepage = "https://endpointblank.com"
+Documentation = "https://endpointblank.com/docs/sdk-setup"
+Source = "https://github.com/EndPointBlank/end_point_blank_py"
+Issues = "https://github.com/EndPointBlank/end_point_blank_py/issues"
 
 [project.optional-dependencies]
 flask = ["flask>=2.3"]
