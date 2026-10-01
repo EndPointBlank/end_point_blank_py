@@ -1,7 +1,9 @@
 # EndPointBlank (Python)
 
-EndPointBlank client for Python (Django / Flask / any WSGI app) — endpoint tracking, request
-authorization, error/request/response/log reporting, and client-side data masking.
+Python SDK for [EndPointBlank](https://endpointblank.com) (Django / Flask / any WSGI app):
+authorize service-to-service API calls, report endpoint versions, and see which clients still call
+deprecated API versions. It covers endpoint tracking, request authorization,
+error/request/response/log reporting, and client-side data masking.
 
 ## Installation
 
