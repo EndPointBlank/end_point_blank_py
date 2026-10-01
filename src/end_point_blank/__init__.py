@@ -40,7 +40,7 @@ from .token_unavailable_error import TokenUnavailableError
 from .tokens.token_result import TokenOutcome, TokenResult
 from .unauthorized_error import UnauthorizedError
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 
 
 def configure(
