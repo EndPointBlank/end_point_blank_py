@@ -9,6 +9,7 @@ from ..configuration import Configuration, LogMode
 from ..request_store import RequestStore
 from .direct_writer import DirectWriter
 from .delayed_writer import DelayedWriter
+from ..commands._http import log_unsent
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ class LogWriter:
             payload["stamped_http_method"] = env.get("REQUEST_METHOD")
             _writer().write([payload])
         except Exception as exc:
-            logger.error("LogWriter failed: %s", exc)
+            log_unsent("LogWriter write", exc)
 
 
 def _writer():

@@ -5,6 +5,7 @@ import threading
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
+from ..strip_url import strip_url
 from .token_result import TokenOutcome, TokenResult
 
 logger = logging.getLogger(__name__)
@@ -82,23 +83,70 @@ class AccessTokens:
         Returns a valid access token for *base_url*, fetching one if no usable
         entry covers it.
 
-        :param base_url: The URL you are about to call, with any query string
-            and fragment removed. It is sent verbatim; intake normalizes it and
-            matches it against registered base URLs by longest path prefix.
+        :param base_url: The URL you are about to call. Userinfo, query and
+            fragment are removed (see :func:`~end_point_blank.strip_url.strip_url`);
+            the rest is sent as written, and intake normalizes it and matches
+            it against registered base URLs by longest path prefix.
         :returns: The access token string, or ``None`` if generation failed --
-            which includes a response that carried a token but no ``base_url``.
-            ``None`` says nothing about *why*; call :meth:`last_failure` to find
-            out whether the credential was rejected or intake was simply down.
+            which includes a response that carried a token but no ``base_url``,
+            and a URL that is not http or https with a host, for which no
+            request is made.
+            ``None`` says nothing about *why*; call :meth:`token_result` to get
+            the reason for this very call, or :meth:`last_failure` to find out
+            whether the credential was rejected or intake was simply down.
+        :raises ConfigurationError: and any other non-transport error the
+            mint raises, as :meth:`token_result` does.
         """
-        entry = self._match(base_url)
-        if self._usable(entry):
-            return entry["token"]
+        if strip_url(base_url) is None:
+            # Published as None-on-failure, so an unusable URL answers None
+            # here; token_result is where it raises.
+            return None
+        result = self.token_result(base_url)
+        return result.payload["token"] if result.outcome is TokenOutcome.SUCCESS else None
+
+    def token_result(self, base_url: str) -> TokenResult:
+        """
+        Like :meth:`token`, but answers the whole
+        :class:`~end_point_blank.tokens.token_result.TokenResult` for *this*
+        call rather than just the token.
+
+        Use this, not ``token`` followed by :meth:`last_failure`, when the
+        reason for a failure matters. The failure record is shared per target
+        and read after the lock is released, so between the two calls another
+        thread can overwrite it with its own failure or clear it with a success
+        -- and the reason reported would be someone else's. The result returned
+        here is the one captured under the lock for this call and cannot change.
+
+        :returns: A :attr:`~TokenOutcome.SUCCESS` result whose ``payload``
+            carries ``token``, ``base_url`` (the canonical key it is cached
+            under) and ``expired_at`` -- ``status`` is ``None`` when it was
+            served from the cache -- or the failed mint's result.
+        :raises ValueError: when *base_url* is not an absolute http or https
+            URL with a host. No request is made.
+        :raises ConfigurationError: when ``client_id`` or ``client_secret`` is
+            missing. No request is made.
+        :raises Exception: whatever else the mint raises that is not a
+            transport error, as itself; nothing is recorded for it (sc-1469).
+        """
+        # Stripped once, here, so the cache and failure keys, the mint and the
+        # log lines below all see the same form -- never the userinfo, query
+        # or fragment the caller passed.
+        url = strip_url(base_url)
+        if url is None:
+            # The URL is left out of the message: it could not be parsed, so
+            # there is no telling which part of it is a secret.
+            raise ValueError("an access token needs an absolute http or https URL with a host")
+        base_url = url
+
+        cached = self._cached_result(base_url)
+        if cached is not None:
+            return cached
 
         with self._lock:
             # Another caller may have filled it while this one waited.
-            entry = self._match(base_url)
-            if self._usable(entry):
-                return entry["token"]
+            cached = self._cached_result(base_url)
+            if cached is not None:
+                return cached
 
             # The entry (if any) this request is refreshing. Captured once,
             # before the mint, and reused by both outcomes below: the failure
@@ -138,7 +186,7 @@ class AccessTokens:
                     },
                 }
                 self._forget_failures(base_url, key)
-                return payload["token"]
+                return result
 
             # A failed refresh must not leave an expiring token behind claiming
             # to be usable — callers would keep presenting it right up to the
@@ -170,11 +218,15 @@ class AccessTokens:
                     base_url,
                     self._failure_reason(result),
                 )
-            return None
+            return result
 
     def exists(self, base_url: str) -> bool:
-        """Returns ``True`` if a token covering *base_url* has 30+ seconds left."""
-        entry = self._match(base_url)
+        """Returns ``True`` if a token covering *base_url* has 30+ seconds left.
+
+        *base_url* is stripped as :meth:`token_result` strips it; one that is
+        not http or https with a host is covered by nothing.
+        """
+        entry = self._match(strip_url(base_url))
         return bool(entry and entry["expired_at"] > datetime.now(tz=timezone.utc) + _MIN_TTL)
 
     def last_failure(self, base_url: str) -> Optional[TokenResult]:
@@ -205,14 +257,16 @@ class AccessTokens:
         about another, since a process can hold tokens for several environments.
         Only the most recent ``_FAILURE_CAP`` targets are kept -- see the cap.
 
-        :param base_url: The URL you asked for a token for.
+        :param base_url: The URL you asked for a token for, stripped as
+            :meth:`token_result` strips it; one that is not http or https with
+            a host matches nothing.
         :returns: The recorded
             :class:`~end_point_blank.tokens.token_result.TokenResult`, or
             ``None`` if nothing covering *base_url* has failed since the last
             success.
         """
         failures = self._failures  # One atomic read; writes replace, never mutate.
-        key = self._match_key(base_url, failures)
+        key = self._match_key(strip_url(base_url), failures)
         return failures.get(key) if key is not None else None
 
     def invalidate(self, stale_token: Optional[str]) -> None:
@@ -309,6 +363,24 @@ class AccessTokens:
                 if best is None or len(key) > len(best):
                     best = key
         return best
+
+    def _cached_result(self, base_url: str) -> Optional[TokenResult]:
+        """A SUCCESS result for a usable held entry covering *base_url*, or
+        ``None``. One atomic read of ``_entries``, so key and entry agree."""
+        entries = self._entries  # One atomic read; writes replace, never mutate.
+        key = self._match_key(base_url, entries)
+        entry = entries.get(key) if key is not None else None
+        if not self._usable(entry):
+            return None
+        return TokenResult(
+            TokenOutcome.SUCCESS,
+            None,
+            {
+                "token": entry["token"],
+                "base_url": key,
+                "expired_at": entry["expired_at"].isoformat(),
+            },
+        )
 
     def _match(self, base_url: str) -> Optional[dict]:
         entries = self._entries  # One atomic read; writes replace, never mutate.

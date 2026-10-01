@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 
 from ..configuration import Configuration
 from .direct_writer import DirectWriter
+from ..commands._http import log_unsent
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class DelayedWriter:
             try:
                 self._direct.write(batch)
             except Exception as exc:
-                logger.error("DelayedWriter flush error: %s", exc)
+                log_unsent("DelayedWriter flush", exc)
             finally:
                 for _ in batch:
                     self._queue.task_done()

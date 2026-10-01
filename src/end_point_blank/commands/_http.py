@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional
 import requests
 from requests.adapters import HTTPAdapter
 
+from ..configuration_error import ConfigurationError
+
 logger = logging.getLogger(__name__)
 
 _CONNECT_TIMEOUT = 3  # seconds — TCP/TLS handshake budget per attempt
@@ -51,6 +53,22 @@ def _session() -> requests.Session:
     return _local.session
 
 
+# What a request that never completed raises: a refused or dropped connection,
+# DNS, TLS and proxy failures (all ``ConnectionError``), a connect or read
+# timeout, and a body cut off mid-stream. Only these are retried and answered
+# with None. Every other ``RequestException`` -- ``MissingSchema``,
+# ``InvalidURL``, ``InvalidHeader``, a body that will not serialize -- is a
+# configuration or programming error that no retry can fix, and calling it a
+# network failure would send the reader off to check the network: it
+# propagates (sc-1469). Matches the Ruby gem, whose ``Http.post`` rescues only
+# ``Excon::Error``.
+TRANSPORT_ERRORS = (
+    requests.ConnectionError,
+    requests.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+
 def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.Response]:
     """
     POST *body* as JSON to *url* with *auth_header*.
@@ -58,7 +76,9 @@ def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.
     Uses a per-thread persistent session (amortising TLS handshake cost)
     with an SSL adapter that tolerates missing close_notify alerts.
 
-    :returns: The :class:`requests.Response`, or ``None`` on network error.
+    :returns: The :class:`requests.Response`, or ``None`` when the request
+        never completed (one of :data:`TRANSPORT_ERRORS`, three times).
+    :raises requests.RequestException: any other request error, unretried.
     """
     for attempt in range(1, 4):
         try:
@@ -68,8 +88,27 @@ def post(url: str, auth_header: str, body: Dict[str, Any]) -> Optional[requests.
                 headers={"Authorization": auth_header, "Content-Type": "application/json"},
                 timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
             )
-        except requests.RequestException as exc:
+        except TRANSPORT_ERRORS as exc:
             logger.error("HTTP POST to %s failed (attempt %d/3): %s", url, attempt, exc)
             if attempt < 3:
                 time.sleep(0.2)
     return None
+
+
+def log_unsent(what: str, exc: Exception) -> None:
+    """
+    Logs an intake call on a request, boot or background path that raised
+    instead of answering, so the caller can treat it as unanswered.
+
+    Since sc-1469 a missing credential raises :class:`ConfigurationError` and
+    :func:`post` lets a non-transport error through. Neither may crash the
+    host application from authenticate/authorize, endpoint registration or the
+    writers, which used to answer None or log for every failure. A ``ConfigurationError``'s
+    text is the SDK's own and says what to set; anything else is named by
+    class only, because requests puts the offending header value -- here, the
+    credential -- in an ``InvalidHeader``'s message.
+    """
+    if isinstance(exc, ConfigurationError):
+        logger.error("%s not sent to EndPointBlank: %s", what, exc)
+    else:
+        logger.error("%s to EndPointBlank failed unexpectedly (%s)", what, type(exc).__name__)

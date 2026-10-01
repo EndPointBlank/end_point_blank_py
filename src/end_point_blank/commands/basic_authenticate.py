@@ -8,7 +8,7 @@ import requests as req_lib
 from ..authorization import Authorization
 from ..configuration import Configuration
 from ..request_store import RequestStore
-from ._http import post
+from ._http import log_unsent, post
 from .endpoint_authorize import _remote_addr
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,12 @@ class BasicAuthenticate:
             "source_ip": ip_address or _remote_addr(environ),
         }
 
-        response = post(config.authorize_url, Authorization.header(), body)
+        try:
+            response = post(config.authorize_url, Authorization._intake_header(), body)
+        except Exception as exc:
+            # Unanswered, not a crash: the decorators refuse a None (sc-1469).
+            log_unsent("Authentication", exc)
+            return None
         if response is None:
             return None
 
