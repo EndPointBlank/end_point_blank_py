@@ -78,3 +78,25 @@ def test_ssl_context_is_built_once_and_reused():
     second = _http._SSLAdapter._ssl_context()
 
     assert first is second
+
+
+# sc-1463: intake will record the oldest SDK version seen per credential,
+# which gates moving an organization to another intake.
+def test_sdk_header_names_this_sdk_and_its_version():
+    import end_point_blank
+
+    assert _http.sdk_header() == f"python/{end_point_blank.VERSION}"
+
+
+def test_post_sends_x_epb_sdk_alongside_the_authorization_header():
+    import end_point_blank
+
+    mock_session = MagicMock()
+    mock_session.post.return_value = MagicMock(status_code=201)
+
+    with patch.object(_http, "_session", return_value=mock_session):
+        _http.post("https://intake.example/authorize", "Basic abc", {"a": 1})
+
+    _, kwargs = mock_session.post.call_args
+    assert kwargs["headers"]["x-epb-sdk"] == f"python/{end_point_blank.VERSION}"
+    assert kwargs["headers"]["Authorization"] == "Basic abc"

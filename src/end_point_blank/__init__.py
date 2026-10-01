@@ -27,7 +27,14 @@ Quick start::
 
 """
 
-from .configuration import _UNSET, Configuration, LogMode, _Unset, _validate_cache_ttl
+from .configuration import (
+    _UNSET,
+    Configuration,
+    LogMode,
+    _Unset,
+    _validate_cache_ttl,
+    _validate_derive_base_url,
+)
 from .tokens.token_result import TokenOutcome, TokenResult
 from .unauthorized_error import UnauthorizedError
 
@@ -50,6 +57,7 @@ def configure(
     trust_proxy_headers: bool = None,
     masking_rules=None,
     mask_hook=None,
+    derive_base_url_from_client_id: bool = None,
 ) -> None:
     """
     Configure the EndPointBlank library.
@@ -78,11 +86,18 @@ def configure(
         Set to ``False`` on a directly-exposed deployment with no proxy in front.
     :param masking_rules: List of masking rule dicts (``target``/``path``/``regex``/``replacement_value``).
     :param mask_hook: Optional callable ``(payload, record_type) -> payload`` run after rule-based masking.
+    :param derive_base_url_from_client_id: When neither ``base_url`` nor
+        ``ENDPOINTBLANK_BASE_URL`` is set, call ``https://<slug>.in.endpointblank.com``
+        for a slug-prefixed ``client_id`` (default: ``False``; see the README's
+        "Intake hostname from ``client_id``"). Anything but ``True`` or ``False``
+        raises ``ValueError`` here, before any setting from this call is applied.
     """
     # Checked before anything is assigned, so a rejected call leaves the
     # configuration exactly as it was.
     if cache_ttl is not _UNSET:
         _validate_cache_ttl(cache_ttl)
+    if derive_base_url_from_client_id is not None:
+        _validate_derive_base_url(derive_base_url_from_client_id)
 
     config = Configuration()
     if client_id is not None:
@@ -113,6 +128,8 @@ def configure(
         config.masking_rules = masking_rules
     if mask_hook is not None:
         config.mask_hook = mask_hook
+    if derive_base_url_from_client_id is not None:
+        config.derive_base_url_from_client_id = derive_base_url_from_client_id
 
 
 __all__ = [

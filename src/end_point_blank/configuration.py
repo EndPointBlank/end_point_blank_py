@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from enum import Enum
 from typing import Callable, Optional
 
@@ -54,6 +55,50 @@ def _normalize_base_url(value: str, setting_name: str) -> str:
 
 
 DEFAULT_CACHE_TTL = 300  # seconds
+
+DEFAULT_BASE_URL = "https://in.endpointblank.com"
+_DERIVED_BASE_URL_SUFFIX = ".in.endpointblank.com"
+
+# app_portal's ``Organizations.Slug.valid?/1``: a domain label of up to 20
+# ``[a-z0-9-]`` characters that starts and ends alphanumeric, then ``-`` and 6
+# random characters. Copied, not loosened. ``re.ASCII`` is belt and braces:
+# the classes are already spelled out, and ``fullmatch`` (not ``$``) keeps a
+# trailing newline out.
+_SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,18}[a-z0-9])?-[a-z0-9]{6}", re.ASCII)
+
+
+def client_id_slug(client_id: object) -> Optional[str]:
+    """
+    The organization slug a ``client_id`` names, or ``None`` for one without
+    it (issued before sc-1463).
+
+    The same rule as app_portal's ``Credentials.client_id_slug/1`` and the
+    Elixir SDK's ``EndPointBlank.Config.client_id_slug/1``: the part before the
+    first ``.`` must have the exact shape of an organization slug, and
+    something must follow the dot. "Contains a ``.``" is not enough, because
+    app_portal has always accepted a typed ``client_id``, so a legacy
+    ``my.client`` can exist and must keep calling the default intake.
+    """
+    if not isinstance(client_id, str):
+        return None
+    slug, dot, rest = client_id.partition(".")
+    if not dot or not rest:
+        return None
+    return slug if _SLUG.fullmatch(slug) else None
+
+
+def _validate_derive_base_url(value: object) -> bool:
+    """
+    Only a ``bool``: a string ``"true"`` from an environment variable must not
+    quietly leave derivation off (or, being truthy, ``"false"`` quietly turn it
+    on), and nothing else has a sensible reading.
+    """
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"derive_base_url_from_client_id must be True or False, got {value!r} "
+            f"({type(value).__name__})."
+        )
+    return value
 
 
 class _Unset(Enum):
@@ -175,6 +220,7 @@ class Configuration:
         self.application_version: Optional[str] = None
         self.token_ttl: Optional[int] = None  # seconds
         self._cache_ttl: int = DEFAULT_CACHE_TTL
+        self._derive_base_url_from_client_id: bool = False
         self.trust_proxy_headers: bool = True
         self.masking_rules: list[dict] = []
         self.mask_hook: Optional[Callable[[dict, str], dict]] = None
@@ -206,9 +252,26 @@ class Configuration:
         resolved = (
             self._base_url
             or os.environ.get("ENDPOINTBLANK_BASE_URL")
-            or "https://in.endpointblank.com"
+            or self._derived_base_url()
+            or DEFAULT_BASE_URL
         )
         return _normalize_base_url(resolved, "base_url")
+
+    def _derived_base_url(self) -> Optional[str]:
+        """
+        sc-1463: a new ``client_id`` is ``<organization slug>.<random>``, and
+        that organization's intake answers at
+        ``https://<slug>.in.endpointblank.com``. Only while
+        ``derive_base_url_from_client_id`` is on: ``*.in.endpointblank.com``
+        has no DNS or TLS in production yet, so it defaults off, and off means
+        today's default for every ``client_id``. Logs are not derived: whether
+        they get a per-organization hostname is still open, so
+        ``log_base_url`` keeps its own default.
+        """
+        if not self._derive_base_url_from_client_id:
+            return None
+        slug = client_id_slug(self.client_id)
+        return f"https://{slug}{_DERIVED_BASE_URL_SUFFIX}" if slug else None
 
     @base_url.setter
     def base_url(self, value: Optional[str]) -> None:
@@ -255,6 +318,18 @@ class Configuration:
     @cache_ttl.setter
     def cache_ttl(self, value: int) -> None:
         self._cache_ttl = _validate_cache_ttl(value)
+
+    @property
+    def derive_base_url_from_client_id(self) -> bool:
+        """When no ``base_url`` or ``ENDPOINTBLANK_BASE_URL`` is set, call
+        ``https://<slug>.in.endpointblank.com`` for a slug-prefixed
+        ``client_id`` (default ``False``). Assigning anything but a ``bool``
+        raises ``ValueError``."""
+        return self._derive_base_url_from_client_id
+
+    @derive_base_url_from_client_id.setter
+    def derive_base_url_from_client_id(self, value: bool) -> None:
+        self._derive_base_url_from_client_id = _validate_derive_base_url(value)
 
     # URL builders
     @property

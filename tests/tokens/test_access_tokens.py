@@ -289,6 +289,27 @@ class TestWhenGenerationFails:
             assert generate.call_count == 1
 
 
+    # sc-1463 conformance: a 503 or a 429 is an answer about this moment, not
+    # about the credential, so nothing may hold on to it -- the very next call
+    # asks intake again, and succeeds once intake does.
+    @pytest.mark.parametrize(
+        "refusal",
+        [server_error(503, {"error": "busy"}), request_rejected(429, {"error": "busy"})],
+        ids=["503", "429"],
+    )
+    def test_does_not_cache_a_503_or_a_429(self, refusal):
+        with patch(GENERATOR, return_value=refusal) as generate:
+            assert AccessTokens().token(BASE) is None
+            assert AccessTokens().token(BASE) is None
+            assert generate.call_count == 2
+
+        assert AccessTokens().exists(BASE) is False
+
+        with patch(GENERATOR, return_value=minted("tok-recovered")):
+            assert AccessTokens().token(BASE) == "tok-recovered"
+
+        assert AccessTokens().last_failure(BASE) is None
+
 class TestExists:
     def test_is_false_before_any_token_is_issued(self):
         assert AccessTokens().exists(BASE) is False
