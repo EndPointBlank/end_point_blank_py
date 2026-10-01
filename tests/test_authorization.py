@@ -25,6 +25,7 @@ from end_point_blank.token_unavailable_error import TokenUnavailableError
 from end_point_blank.tokens.access_tokens import AccessTokens
 from end_point_blank.tokens.token_result import TokenOutcome, TokenResult
 from end_point_blank.writers.direct_writer import DirectWriter
+from end_point_blank.writers.log_writer import LogWriter
 
 INTAKE = "https://intake.test"
 LOG_INTAKE = "https://log-intake.test"
@@ -381,9 +382,11 @@ class TestBootRequestAndBackgroundPathsNeverRaise:
 
         assert BasicAuthenticate.authenticate(dict(self.ENVIRON), "/x", None) is None
         EndpointUpdate([]).update()
+        LogWriter.write("hello", "info")
 
-        assert len(wire.sent) == 2  # One attempt each: nothing to retry.
-        assert "failed unexpectedly (InvalidHeader)" in caplog.text
+        assert len(wire.sent) == 3  # One attempt each: nothing to retry.
+        assert caplog.text.count("failed unexpectedly (InvalidHeader)") == 3
+        assert "LogWriter write to EndPointBlank failed unexpectedly (InvalidHeader)" in caplog.text
         assert BASIC.split()[1] not in caplog.text
 
     def test_the_writers_log_a_missing_credential(self, no_credentials, wire_with, caplog):

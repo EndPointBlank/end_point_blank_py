@@ -38,10 +38,9 @@
   `Authorization.header`, `AccessTokens.token`, `token_result`, `exists` and `last_failure`, and
   `GenerateAccessToken` all reduce the URL to scheme, host, port and path first, so cache and
   failure keys and log lines use that form, and `error.base_url` holds it (`None` if the URL could
-  not be parsed). As the Ruby gem's `TargetUrl.strip` does, the scheme is lowercased and a default
-  or empty port is dropped (`https://h:443/x` and `https://h:/x` are both sent as `https://h/x`);
-  the host is lowercased too (Ruby keeps its spelling; intake lowercases it either way), and the
-  path keeps the caller's spelling. A URL that is not http or https (`ftp`, `ws`, `wss`, `file`,
+  not be parsed). As in the Ruby gem's `TargetUrl.strip`, the scheme and host are lowercased and a
+  default or empty port is dropped (`https://h:443/x` and `https://h:/x` are both sent as
+  `https://h/x`); the path keeps the caller's spelling. A URL that is not http or https (`ftp`, `ws`, `wss`, `file`,
   `mailto` ...), has no host, or has a port that is not a number in 1..65535 is refused before any
   request:
   `AccessTokens.token_result` and `GenerateAccessToken.token_result` raise `ValueError`, while
@@ -73,7 +72,8 @@
   and reported as `TRANSPORT_ERROR` ("intake could not be reached"). It is now raised at once:
   `GenerateAccessToken.token`/`token_result` and `AccessTokens.token`/`token_result` raise it, and
   `Authorization.header` reports it as `TokenUnavailableError` with `unexpected` true. The boot,
-  request and background paths above log it by class name only and carry on.
+  request and background paths above (registration, authenticate/authorize and the writers) log it
+  by class name only and carry on.
 
 - **`Authorization.basic_credentials()` is deprecated (sc-1469)** and emits a
   `DeprecationWarning`: it is this service's own `client_id`/`client_secret`, only valid for its

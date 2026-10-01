@@ -11,6 +11,7 @@ from ..configuration import Configuration, LogMode
 from ..request_store import RequestStore
 from .direct_writer import DirectWriter
 from .delayed_writer import DelayedWriter
+from ..commands._http import log_unsent
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,7 @@ class RequestWriter:
             payload = _mask(payload, "request", config.masking_rules, config.mask_hook)
             _writer().write([payload])
         except Exception as exc:
-            logger.error("RequestWriter failed: %s", exc)
+            log_unsent("RequestWriter write", exc)
 
 
 def _writer():

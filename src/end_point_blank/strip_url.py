@@ -39,9 +39,9 @@ def strip_url(value) -> Optional[str]:
     any other scheme (``ftp``, ``ws``, ``file``, ``mailto`` ...) is refused
     rather than rebuilt into something intake would be asked to mint for.
 
-    Matches the Ruby gem's ``EndPointBlank::TargetUrl.strip`` except that the
-    host is lowercased here and kept as written there; intake lowercases it
-    either way.
+    Matches the Ruby gem's ``EndPointBlank::TargetUrl.strip`` (rails#43). The
+    one remaining difference is that surrounding whitespace is trimmed here
+    and refused by Ruby's ``URI.parse``.
 
     :returns: The stripped URL, or ``None`` when *value* is not a non-empty
         string, does not parse (a non-numeric port, or one outside 1..65535,

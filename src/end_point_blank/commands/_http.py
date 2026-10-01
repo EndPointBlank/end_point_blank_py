@@ -102,8 +102,8 @@ def log_unsent(what: str, exc: Exception) -> None:
 
     Since sc-1469 a missing credential raises :class:`ConfigurationError` and
     :func:`post` lets a non-transport error through. Neither may crash the
-    host application from authenticate/authorize or endpoint registration,
-    which used to answer None for every failure. A ``ConfigurationError``'s
+    host application from authenticate/authorize, endpoint registration or the
+    writers, which used to answer None or log for every failure. A ``ConfigurationError``'s
     text is the SDK's own and says what to set; anything else is named by
     class only, because requests puts the offending header value -- here, the
     credential -- in an ``InvalidHeader``'s message.
