@@ -146,15 +146,13 @@ class TestKeyingOnTheBaseUrl:
 
     @pytest.mark.parametrize(
         "requested",
-        ["https://example.com/Orders", "https://example.com/orders?page=2"],
-        ids=["different-case", "query-string"],
+        ["https://example.com/Orders"],
+        ids=["different-case"],
     )
     def test_a_non_canonical_url_misses_rather_than_guessing(self, requested):
         # The SDK does not normalize -- intake owns that rule. A URL that does
         # not match character-for-character costs one extra request, which is
-        # cheaper than presenting a token issued for somewhere else. (A query
-        # string should have been stripped before it got here; missing is the
-        # right answer when it was not.)
+        # cheaper than presenting a token issued for somewhere else.
         responses = [
             minted("tok-1", base_url="https://example.com/orders"),
             minted("tok-2", base_url="https://example.com/orders"),
@@ -525,6 +523,43 @@ class TestTheExpiryTimestamp:
         assert AccessTokens().exists(BASE) is True
 
 
+class TestUserinfoQueryAndFragmentAreStripped:
+    """sc-1469: they can carry a secret and intake refuses them, so they are
+    removed at the entry points -- before the cache, the failure record, the
+    mint and the log see the URL."""
+
+    RAW = "https://user:hunter2@api.example.com/orders?api_key=s3cret#frag"
+
+    def test_the_mint_and_the_cache_see_the_stripped_url(self):
+        with patch(GENERATOR, return_value=minted("tok-1")) as generate:
+            assert AccessTokens().token(self.RAW) == "tok-1"
+            assert AccessTokens().token(self.RAW) == "tok-1"
+
+        assert generate.call_args_list == [call(BASE)]
+        assert AccessTokens().exists(self.RAW) is True
+
+    def test_the_failure_is_recorded_and_logged_under_the_stripped_url(self, caplog):
+        with patch(GENERATOR, return_value=TRANSPORT_FAILURE):
+            AccessTokens().token(self.RAW)
+
+        assert AccessTokens().last_failure(BASE) is TRANSPORT_FAILURE
+        assert AccessTokens().last_failure(self.RAW) is TRANSPORT_FAILURE
+        assert BASE in caplog.text
+        for secret in ("hunter2", "s3cret", "frag"):
+            assert secret not in caplog.text
+
+    @pytest.mark.parametrize("url", ["not a url ?token=s3cret", "https:///orders", "https://h:x/"])
+    def test_an_unparseable_url_makes_no_request(self, url):
+        with patch(GENERATOR) as generate:
+            assert AccessTokens().token(url) is None
+            with pytest.raises(ValueError):
+                AccessTokens().token_result(url)
+
+        generate.assert_not_called()
+        assert AccessTokens().exists(url) is False
+        assert AccessTokens().last_failure(url) is None
+
+
 class TestANilBaseUrl:
     """``token(None)`` / ``exists(None)`` used to behave differently depending
     on cache state, because the match loop only touches its argument once
@@ -536,15 +571,16 @@ class TestANilBaseUrl:
       ``AttributeError``.
 
     Same call, two outcomes, decided entirely by unrelated earlier traffic.
-    Both must now take the same "no match" miss path -- the warm-cache case
-    is the one that matters, because a cold cache never raised in the first
-    place and would pass without the fix."""
+    Both must now take the same path -- the warm-cache case is the one that
+    matters, because a cold cache never raised in the first place and would
+    pass without the fix. Since sc-1469 that path is a refusal before any
+    request: a nil URL has no scheme or host to mint for."""
 
-    def test_a_cold_cache_does_not_raise_and_mints_with_the_nil_url(self):
+    def test_a_cold_cache_does_not_raise_and_mints_nothing(self):
         with patch(GENERATOR, return_value=TRANSPORT_FAILURE) as generate:
             assert AccessTokens().token(None) is None
 
-        assert generate.call_args == call(None)
+        generate.assert_not_called()
 
     def test_a_warm_cache_reaches_the_same_outcome_as_a_cold_one(self):
         # Seed an entry first so the match loop has something to iterate --
@@ -556,7 +592,7 @@ class TestANilBaseUrl:
         with patch(GENERATOR, return_value=TRANSPORT_FAILURE) as generate:
             assert AccessTokens().token(None) is None
 
-        assert generate.call_args == call(None)
+        generate.assert_not_called()
         # The unrelated warm entry must survive untouched.
         assert AccessTokens().exists(BASE) is True
 

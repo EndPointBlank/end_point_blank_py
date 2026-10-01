@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 from ..authorization import Authorization
 from ..configuration import Configuration
+from ..strip_url import strip_url
 from ..tokens.token_result import TokenOutcome, TokenResult
 from ._http import post
 
@@ -31,27 +32,47 @@ class GenerateAccessToken:
         """
         Requests a new access token for *base_url* and reports how it went.
 
-        :param base_url: Sent verbatim. intake normalizes it and matches it
-            against registered base URLs by longest path prefix.
+        :param base_url: Sent with userinfo, query and fragment removed (see
+            :func:`~end_point_blank.strip_url.strip_url`) and otherwise as
+            written. intake normalizes it and matches it against registered
+            base URLs by longest path prefix.
         :returns: A :class:`~end_point_blank.tokens.token_result.TokenResult`.
             Never ``None`` -- every failure mode is one of the outcomes. An
             outcome of :attr:`~end_point_blank.tokens.token_result.TokenOutcome.SUCCESS`
             means a token really was minted, so ``result.payload["token"]`` and
             ``result.payload["base_url"]`` can be read without re-checking for
             them.
+        :raises ValueError: when *base_url* is not an absolute http or https
+            URL with a host. No request is made.
+        :raises ConfigurationError: when ``client_id`` or ``client_secret`` is
+            missing. No request is made.
+        :raises Exception: anything raised while minting that is not a
+            transport error (see :data:`~end_point_blank.commands._http.TRANSPORT_ERRORS`),
+            as itself. That is a bug, not an unreachable intake, so it is not
+            reported as :attr:`~TokenOutcome.TRANSPORT_ERROR`;
+            ``Authorization.header`` reports it as "the token request failed
+            unexpectedly" with the exception as its cause (sc-1469).
         """
+        # Defensive: AccessTokens has already stripped it, but this is the one
+        # place the URL goes on the wire, and a direct caller skips that layer.
+        url = strip_url(base_url)
+        if url is None:
+            raise ValueError("an access token needs an absolute http or https URL with a host")
+        base_url = url
+
         config = Configuration()
         body: Dict[str, Any] = {"base_url": base_url}
         if config.token_ttl is not None:
             body["token_ttl"] = config.token_ttl
 
-        response = post(config.access_token_url, Authorization.header(), body)
+        response = post(config.access_token_url, Authorization._intake_header(), body)
 
         # TRANSPORT_ERROR means one thing and only one thing: no usable HTTP
         # status was obtained. ``post`` has already spent its three attempts by
         # the time it answers None, so this is a failed network, not an untried
-        # one -- and it is the ONLY way to reach that outcome. Anything with a
-        # status is classified by the status; see below.
+        # one -- and it is the ONLY way to reach that outcome. ``post`` answers
+        # None for a transport error only; anything else it meets propagates.
+        # Anything with a status is classified by the status; see below.
         if response is None:
             logger.error("Access token request to %s did not complete", base_url)
             return TokenResult(TokenOutcome.TRANSPORT_ERROR)
@@ -118,11 +139,15 @@ class GenerateAccessToken:
         is exactly what this used to return, now alongside the outcome that
         explains it.
 
-        :param base_url: Sent verbatim. intake normalizes it and matches it
-            against registered base URLs by longest path prefix.
+        :param base_url: Stripped and sent as :meth:`token_result` does.
         :returns: A dict with ``token``, ``expired_at`` and ``base_url``, or
-            ``None`` when no token was minted.
+            ``None`` when no token was minted -- including for a URL that is
+            not http or https with a host, for which no request is made.
+        :raises ConfigurationError: and any other non-transport error the
+            mint raises, as :meth:`token_result` does.
         """
+        if strip_url(base_url) is None:
+            return None
         result = GenerateAccessToken.token_result(base_url)
 
         return result.payload if result.outcome is TokenOutcome.SUCCESS else None

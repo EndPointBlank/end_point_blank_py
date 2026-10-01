@@ -34,6 +34,6 @@ class DirectWriter:
 
     def write(self, payloads: List[Dict[str, Any]]) -> None:
         """Sends *payloads* as a JSON body to the API endpoint."""
-        response = post(self._url, Authorization.header(), {"payload": payloads})
+        response = post(self._url, Authorization._intake_header(), {"payload": payloads})
         if response is not None and response.status_code > 299:
             logger.warning("Write failed: %s - %s", response.status_code, response.text)

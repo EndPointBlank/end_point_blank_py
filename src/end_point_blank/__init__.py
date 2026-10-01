@@ -35,6 +35,8 @@ from .configuration import (
     _validate_cache_ttl,
     _validate_derive_base_url,
 )
+from .configuration_error import ConfigurationError
+from .token_unavailable_error import TokenUnavailableError
 from .tokens.token_result import TokenOutcome, TokenResult
 from .unauthorized_error import UnauthorizedError
 
@@ -135,11 +137,13 @@ def configure(
 __all__ = [
     "configure",
     "Configuration",
+    "ConfigurationError",
     "LogMode",
     # Named alongside ``UnauthorizedError`` for the same reason: a caller has to
     # be able to write the type down in order to handle the failure.
     "TokenOutcome",
     "TokenResult",
+    "TokenUnavailableError",
     "UnauthorizedError",
     "VERSION",
 ]

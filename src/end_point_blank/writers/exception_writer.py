@@ -9,6 +9,7 @@ from ..configuration import Configuration, LogMode
 from ..request_store import RequestStore
 from .direct_writer import DirectWriter
 from .delayed_writer import DelayedWriter
+from ..commands._http import log_unsent
 
 # uuid is taken from RequestStore.get_uuid() — same source as RequestWriter and
 # ResponseWriter — so all three rows correlate on the same request. Outside a
@@ -61,7 +62,7 @@ class ExceptionWriter:
             payload = _mask(payload, "error", config.masking_rules, config.mask_hook)
             _writer().write([payload])
         except Exception as reporting_exc:
-            logger.error("ExceptionWriter failed: %s", reporting_exc)
+            log_unsent("ExceptionWriter write", reporting_exc)
 
 
 def _format_stacktrace(exc: BaseException) -> list[str]:
