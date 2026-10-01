@@ -89,10 +89,13 @@ class AccessTokens:
             it against registered base URLs by longest path prefix.
         :returns: The access token string, or ``None`` if generation failed --
             which includes a response that carried a token but no ``base_url``,
-            and a URL with no scheme or host, for which no request is made.
+            and a URL that is not http or https with a host, for which no
+            request is made.
             ``None`` says nothing about *why*; call :meth:`token_result` to get
             the reason for this very call, or :meth:`last_failure` to find out
             whether the credential was rejected or intake was simply down.
+        :raises ConfigurationError: and any other non-transport error the
+            mint raises, as :meth:`token_result` does.
         """
         if strip_url(base_url) is None:
             # Published as None-on-failure, so an unusable URL answers None
@@ -118,8 +121,12 @@ class AccessTokens:
             carries ``token``, ``base_url`` (the canonical key it is cached
             under) and ``expired_at`` -- ``status`` is ``None`` when it was
             served from the cache -- or the failed mint's result.
-        :raises ValueError: when *base_url* is not an absolute URL with a scheme
-            and host. No request is made.
+        :raises ValueError: when *base_url* is not an absolute http or https
+            URL with a host. No request is made.
+        :raises ConfigurationError: when ``client_id`` or ``client_secret`` is
+            missing. No request is made.
+        :raises Exception: whatever else the mint raises that is not a
+            transport error, as itself; nothing is recorded for it (sc-1469).
         """
         # Stripped once, here, so the cache and failure keys, the mint and the
         # log lines below all see the same form -- never the userinfo, query
@@ -128,7 +135,7 @@ class AccessTokens:
         if url is None:
             # The URL is left out of the message: it could not be parsed, so
             # there is no telling which part of it is a secret.
-            raise ValueError("an access token needs an absolute URL with a scheme and host")
+            raise ValueError("an access token needs an absolute http or https URL with a host")
         base_url = url
 
         cached = self._cached_result(base_url)
@@ -216,8 +223,8 @@ class AccessTokens:
     def exists(self, base_url: str) -> bool:
         """Returns ``True`` if a token covering *base_url* has 30+ seconds left.
 
-        *base_url* is stripped as :meth:`token_result` strips it; one with no
-        scheme or host is covered by nothing.
+        *base_url* is stripped as :meth:`token_result` strips it; one that is
+        not http or https with a host is covered by nothing.
         """
         entry = self._match(strip_url(base_url))
         return bool(entry and entry["expired_at"] > datetime.now(tz=timezone.utc) + _MIN_TTL)
@@ -251,8 +258,8 @@ class AccessTokens:
         Only the most recent ``_FAILURE_CAP`` targets are kept -- see the cap.
 
         :param base_url: The URL you asked for a token for, stripped as
-            :meth:`token_result` strips it; one with no scheme or host matches
-            nothing.
+            :meth:`token_result` strips it; one that is not http or https with
+            a host matches nothing.
         :returns: The recorded
             :class:`~end_point_blank.tokens.token_result.TokenResult`, or
             ``None`` if nothing covering *base_url* has failed since the last

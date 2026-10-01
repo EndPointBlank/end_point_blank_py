@@ -60,7 +60,7 @@ def test_post_returns_none_and_logs_on_read_timeout(caplog):
 
 
 def test_post_returns_none_on_generic_timeout_without_raising():
-    """A bare requests.exceptions.Timeout must be swallowed just like other RequestExceptions."""
+    """A bare requests.exceptions.Timeout must be swallowed just like the other transport errors."""
     mock_session = MagicMock()
     mock_session.post.side_effect = requests.exceptions.Timeout("timed out")
 
@@ -69,6 +69,42 @@ def test_post_returns_none_on_generic_timeout_without_raising():
             result = _http.post("https://intake.example/authorize", "Bearer abc", {"a": 1})
 
     assert result is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [requests.exceptions.ConnectionError("refused"), requests.exceptions.ChunkedEncodingError("cut off")],
+    ids=["connection", "chunked-encoding"],
+)
+def test_post_retries_and_swallows_a_transport_error(error):
+    mock_session = MagicMock()
+    mock_session.post.side_effect = error
+
+    with patch.object(_http, "_session", return_value=mock_session):
+        with patch("time.sleep"):
+            assert _http.post("https://intake.example/authorize", "Basic abc", {"a": 1}) is None
+
+    assert mock_session.post.call_count == 3
+
+
+@pytest.mark.parametrize(
+    "error",
+    [requests.exceptions.MissingSchema("no scheme"), requests.exceptions.InvalidURL("bad"),
+     requests.exceptions.InvalidHeader("bad"), requests.exceptions.InvalidJSONError("bad")],
+    ids=["missing-schema", "invalid-url", "invalid-header", "invalid-json"],
+)
+def test_post_raises_a_request_error_that_is_not_transport_without_retrying(error):
+    # sc-1469 review: no retry can fix a bad URL, header or body, and None
+    # would report it as a network failure.
+    mock_session = MagicMock()
+    mock_session.post.side_effect = error
+
+    with patch.object(_http, "_session", return_value=mock_session):
+        with patch("time.sleep"):
+            with pytest.raises(type(error)):
+                _http.post("https://intake.example/authorize", "Basic abc", {"a": 1})
+
+    assert mock_session.post.call_count == 1
 
 
 def test_ssl_context_is_built_once_and_reused():

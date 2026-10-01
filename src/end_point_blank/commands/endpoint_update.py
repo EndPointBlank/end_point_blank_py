@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 from .. import VERSION
 from ..authorization import Authorization
 from ..configuration import Configuration
-from ._http import post
+from ._http import log_unsent, post
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,14 @@ class EndpointUpdate:
             data.get("environment"),
             data.get("app_version"),
         )
-        response = post(config.endpoint_update_url, Authorization._intake_header(), data)
+        try:
+            response = post(config.endpoint_update_url, Authorization._intake_header(), data)
+        except Exception as exc:
+            # Runs at boot, from register_flask_endpoints and from Django's
+            # AppConfig.ready(): a failed registration is logged, never allowed
+            # to stop the application starting (sc-1469).
+            log_unsent("Endpoint update", exc)
+            return
         if response is None:
             return
         if response.status_code > 299:

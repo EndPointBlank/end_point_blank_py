@@ -16,7 +16,8 @@
   | `Authorization.header(url)`, token available | `"Bearer <token>"` | same |
   | `Authorization.header(url)`, no token | raises `end_point_blank.TokenUnavailableError` | `"Basic <client_id:secret>"` |
   | `Authorization.header()` / `header(None)` / `header("")` | `TypeError` / `ValueError` | `"Basic <client_id:secret>"` |
-  | `Authorization.header(url)`, `url` has no scheme or host | `ValueError`, no request | a mint attempt |
+  | `Authorization.header(url)`, `url` is not http or https with a host | `ValueError`, no request | a mint attempt |
+  | `Authorization.header(url)`, `client_id` or `client_secret` missing | raises `end_point_blank.ConfigurationError`, no request | Basic `None:None` to intake, reported as a rejected credential |
 
   The error's message says the token could not be minted, why (unreachable/timeout, credential
   rejected, request refused, server error, each with its HTTP status when there is one), and that
@@ -25,8 +26,9 @@
   never copied into it. It carries `base_url`, `failure` (the outcome and status of the mint made
   for this call, as a `TokenResult` without its payload), `outcome` (its `TokenOutcome`) and
   `status` (its HTTP status, or `None`), and is exported from the package root. A mint that raises
-  anything is reported as this error with outcome `TRANSPORT_ERROR`, the text "the token request
-  failed unexpectedly", and the exception as `cause`. The reason is the one captured for this
+  anything other than `ConfigurationError` is reported as this error with outcome
+  `TRANSPORT_ERROR`, `unexpected` true, the text "the token request failed unexpectedly", and the
+  exception as `cause`; every other instance has `unexpected` false. The reason is the one captured for this
   call: `AccessTokens.token_result(base_url)` answers it, so a concurrent mint on another thread
   cannot swap in its own reason.
 
@@ -36,7 +38,12 @@
   `Authorization.header`, `AccessTokens.token`, `token_result`, `exists` and `last_failure`, and
   `GenerateAccessToken` all reduce the URL to scheme, host, port and path first, so cache and
   failure keys and log lines use that form, and `error.base_url` holds it (`None` if the URL could
-  not be parsed). A URL with no scheme or host is refused before any request:
+  not be parsed). As the Ruby gem's `TargetUrl.strip` does, the scheme is lowercased and a default
+  or empty port is dropped (`https://h:443/x` and `https://h:/x` are both sent as `https://h/x`);
+  the host is lowercased too (Ruby keeps its spelling; intake lowercases it either way), and the
+  path keeps the caller's spelling. A URL that is not http or https (`ftp`, `ws`, `wss`, `file`,
+  `mailto` ...), has no host, or has a port that is not a number in 1..65535 is refused before any
+  request:
   `AccessTokens.token_result` and `GenerateAccessToken.token_result` raise `ValueError`, while
   `AccessTokens.token` and `GenerateAccessToken.token` answer `None` as they do for any failure.
   `AccessTokens.token` and `last_failure` otherwise behave as before.
@@ -46,6 +53,31 @@
   build a Basic header yourself as a replacement. If you called `header()` with no argument to
   talk to EndPointBlank directly, the SDK's own intake calls (authorize, token minting, endpoint
   registration, the writers) still use Basic through an internal helper and need nothing from you.
+
+- **A missing `client_id` or `client_secret` raises `end_point_blank.ConfigurationError` (sc-1469)**
+  when the SDK builds its own Basic header for intake, instead of sending `None:None` — which
+  intake answered with a 401 that was reported as a credential to re-issue. Nothing is sent.
+  `Authorization.header` raises it as itself, not wrapped in `TokenUnavailableError`, and so do
+  `AccessTokens.token`/`token_result` and `GenerateAccessToken.token`/`token_result`. Paths that
+  must not crash the host application log it instead: endpoint registration
+  (`register_flask_endpoints`, `register_django_endpoints`, `EndpointUpdate.update`) logs and
+  returns; authenticate and authorize log and answer `None`, which `@authenticated` /
+  `@authorized` refuse with 503 (it was a 401 from intake before); the writers log, as they did
+  for every failure. Exported from the package root.
+
+- **Only a request that never completed is a transport error (sc-1469).** The shared HTTP helper
+  retries and answers `None` for a refused or dropped connection, DNS/TLS/proxy failures, a
+  timeout or a body cut off mid-stream (`requests.ConnectionError`, `requests.Timeout`,
+  `ChunkedEncodingError`). Every other `requests.RequestException` — `MissingSchema`,
+  `InvalidURL`, `InvalidHeader`, a body that will not serialize — used to be retried three times
+  and reported as `TRANSPORT_ERROR` ("intake could not be reached"). It is now raised at once:
+  `GenerateAccessToken.token`/`token_result` and `AccessTokens.token`/`token_result` raise it, and
+  `Authorization.header` reports it as `TokenUnavailableError` with `unexpected` true. The boot,
+  request and background paths above log it by class name only and carry on.
+
+- **`Authorization.basic_credentials()` is deprecated (sc-1469)** and emits a
+  `DeprecationWarning`: it is this service's own `client_id`/`client_secret`, only valid for its
+  own EndPointBlank intake. Never send it to a provider; use `Authorization.header(base_url)`.
 
 - **`BearerGenerate` is deprecated (sc-1469).** `BearerGenerate.generate()` and
   `BearerGenerate.auth_header()` now emit a `DeprecationWarning`: the header they build carries

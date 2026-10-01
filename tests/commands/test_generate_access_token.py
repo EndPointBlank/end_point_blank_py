@@ -32,6 +32,8 @@ def _config(monkeypatch):
     config = Configuration()
     config._init_defaults()
     config.base_url = "https://intake.test"
+    config.client_id = "test-client-id"
+    config.client_secret = "test-client-secret"
     yield config
     config._init_defaults()
 
@@ -49,17 +51,35 @@ class TestTheRequest:
 
         assert post.call_args[0][2] == {"base_url": BASE}
 
-    def test_sends_the_base_url_verbatim(self):
+    def test_sends_the_path_verbatim(self):
         # Intake owns normalization and matches by longest path prefix. The SDK
-        # altering the argument -- downcasing, trimming a trailing slash, or
-        # reducing it to a hostname -- would change which environment the caller
-        # asked for.
-        messy = "https://API.Example.com:8443/Orders/"
+        # altering the path -- downcasing it, trimming a trailing slash, or
+        # dropping it -- would change which environment the caller asked for.
+        # Scheme and host are case-insensitive and are lowercased (sc-1469).
+        messy = "HTTPS://API.Example.com:8443/Orders/"
 
         with patch.object(gat, "post", return_value=response()) as post:
             GenerateAccessToken.token(messy)
 
-        assert post.call_args[0][2]["base_url"] == messy
+        assert post.call_args[0][2]["base_url"] == "https://api.example.com:8443/Orders/"
+
+    @pytest.mark.parametrize(
+        "given, sent",
+        [
+            ("https://api.example.com:443/orders", "https://api.example.com/orders"),
+            ("http://api.example.com:80/orders", "http://api.example.com/orders"),
+            ("https://api.example.com:/orders", "https://api.example.com/orders"),
+            ("http://api.example.com:443/orders", "http://api.example.com:443/orders"),
+        ],
+        ids=["https-443", "http-80", "empty-port", "non-default-port-kept"],
+    )
+    def test_sends_no_default_or_empty_port(self, given, sent):
+        # As the Ruby gem's TargetUrl.strip does (sc-1469 review): one URL,
+        # one form, whichever way the caller spelled its port.
+        with patch.object(gat, "post", return_value=response()) as post:
+            GenerateAccessToken.token(given)
+
+        assert post.call_args[0][2]["base_url"] == sent
 
     def test_sends_no_userinfo_query_or_fragment(self):
         # sc-1469: any of them can carry a secret, and intake refuses a
@@ -69,7 +89,7 @@ class TestTheRequest:
         with patch.object(gat, "post", return_value=response()) as post:
             GenerateAccessToken.token(raw)
 
-        assert post.call_args[0][2]["base_url"] == "https://API.Example.com:8443/Orders/"
+        assert post.call_args[0][2]["base_url"] == "https://api.example.com:8443/Orders/"
 
     def test_an_unparseable_url_makes_no_request(self):
         with patch.object(gat, "post", return_value=response()) as post:

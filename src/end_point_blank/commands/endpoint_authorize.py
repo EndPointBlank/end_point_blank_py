@@ -7,7 +7,7 @@ import requests as req_lib
 
 from ..authorization import Authorization
 from ..configuration import Configuration
-from ._http import post
+from ._http import log_unsent, post
 from .authentication_cache import AuthenticationCache
 from ..request_store import RequestStore
 from ..base_url import hostname as resolve_hostname
@@ -99,7 +99,12 @@ class EndpointAuthorize:
         # that bought nothing. With no Bearer there is no stale token, so the
         # 401 retry that used to live here is gone: a 401 now means the
         # credential is wrong, which is worth surfacing rather than retrying.
-        response = post(config.authorize_url, Authorization._intake_header(), body)
+        try:
+            response = post(config.authorize_url, Authorization._intake_header(), body)
+        except Exception as exc:
+            # Unanswered, not a crash: the decorators refuse a None (sc-1469).
+            log_unsent("Authorization", exc)
+            return None
 
         if response is None:
             return None

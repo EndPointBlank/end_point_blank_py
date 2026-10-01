@@ -19,6 +19,8 @@ from end_point_blank.commands.basic_authenticate import BasicAuthenticate
 from end_point_blank.commands.endpoint_update import EndpointUpdate
 from end_point_blank.commands.generate_access_token import GenerateAccessToken
 from end_point_blank.configuration import Configuration
+from end_point_blank.configuration_error import ConfigurationError
+from end_point_blank.strip_url import strip_url
 from end_point_blank.token_unavailable_error import TokenUnavailableError
 from end_point_blank.tokens.access_tokens import AccessTokens
 from end_point_blank.tokens.token_result import TokenOutcome, TokenResult
@@ -210,12 +212,199 @@ class TestNoTokenMeansNoCall:
         error = raised.value
         assert error.outcome is TokenOutcome.TRANSPORT_ERROR
         assert error.status is None
+        assert error.unexpected is True
         assert error.cause is boom
         assert error.__cause__ is boom
         assert "the token request failed unexpectedly" in str(error)
         assert "secret-bearing detail" not in str(error)
         assert "RuntimeError" not in str(error)
         assert wire.sent == []
+
+    @pytest.mark.parametrize(
+        "mint",
+        [requests.exceptions.MissingSchema("no scheme"), requests.exceptions.InvalidURL("bad url"),
+         requests.exceptions.InvalidHeader("bad header")],
+        ids=["missing-schema", "invalid-url", "invalid-header"],
+    )
+    def test_a_request_error_that_is_not_transport_is_unexpected_and_not_retried(self, wire_with, mint):
+        # sc-1469 review: only a request that never completed is a transport
+        # error. A bad URL or header is a bug no retry can fix; reporting it as
+        # "intake could not be reached" would send the reader to the network.
+        wire = wire_with(mint)
+
+        with pytest.raises(TokenUnavailableError) as raised:
+            call_provider(wire)
+
+        error = raised.value
+        assert error.unexpected is True
+        assert error.outcome is TokenOutcome.TRANSPORT_ERROR
+        assert error.cause is mint
+        assert "the token request failed unexpectedly" in str(error)
+        assert len(wire.sent) == 1
+        assert wire.provider_requests() == []
+
+    def test_a_transport_error_is_not_unexpected(self, wire_with):
+        wire_with(requests.ConnectionError("refused"))
+
+        with pytest.raises(TokenUnavailableError) as raised:
+            Authorization.header(PROVIDER)
+
+        assert raised.value.unexpected is False
+        assert raised.value.cause is None
+
+
+class TestMissingCredentials:
+    """sc-1469 review: a missing client_id or client_secret used to go out as
+    Basic ``None:None``, come back 401, and be reported as a rejected credential
+    to re-issue. It is a configuration error, raised before any request."""
+
+    @pytest.fixture(autouse=True)
+    def no_env(self, monkeypatch):
+        monkeypatch.delenv("ENDPOINTBLANK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("ENDPOINTBLANK_CLIENT_SECRET", raising=False)
+
+    @pytest.mark.parametrize(
+        "client_id, client_secret, missing",
+        [(None, "test-client-secret", "client_id"), ("test-client-id", "", "client_secret"),
+         (None, None, "client_id and client_secret")],
+        ids=["no-client-id", "empty-client-secret", "neither"],
+    )
+    def test_header_raises_it_as_itself_and_sends_nothing(
+        self, configure, wire_with, client_id, client_secret, missing
+    ):
+        configure.client_id = client_id
+        configure.client_secret = client_secret
+        wire = wire_with(response(401, {"error": "invalid"}))
+
+        with pytest.raises(ConfigurationError) as raised:
+            Authorization.header(PROVIDER)
+
+        assert f"EndPointBlank is missing {missing}:" in str(raised.value)
+        assert wire.sent == []
+        assert AccessTokens().last_failure(PROVIDER) is None
+
+    def test_the_intake_header_raises_it(self, configure):
+        configure.client_secret = None
+
+        with pytest.raises(ConfigurationError):
+            Authorization._intake_header()
+
+    def test_the_mint_raises_it_rather_than_reporting_a_transport_error(self, configure, wire_with):
+        configure.client_id = ""
+        wire = wire_with(response(201, {}))
+
+        with pytest.raises(ConfigurationError):
+            GenerateAccessToken.token_result(PROVIDER)
+
+        assert wire.sent == []
+
+    def test_the_environment_supplies_them(self, configure, monkeypatch):
+        configure.client_id = None
+        configure.client_secret = None
+        monkeypatch.setenv("ENDPOINTBLANK_CLIENT_ID", "test-client-id")
+        monkeypatch.setenv("ENDPOINTBLANK_CLIENT_SECRET", "test-client-secret")
+
+        assert Authorization._intake_header() == BASIC
+
+    def test_is_exported_from_the_package(self):
+        assert end_point_blank.ConfigurationError is ConfigurationError
+        assert "ConfigurationError" in end_point_blank.__all__
+
+
+class TestBootRequestAndBackgroundPathsNeverRaise:
+    """sc-1469 review on js#54, applied here: a missing credential now raises,
+    and ``post`` lets a non-transport error through. Endpoint registration at
+    boot, authenticate/authorize on a request, and the writers all used to
+    answer or log a failure; they must still log it, never raise it into the
+    host application. Authenticate/authorize treat it as an intake that did
+    not answer, which the decorators refuse with 503."""
+
+    @pytest.fixture
+    def no_credentials(self, configure, monkeypatch):
+        monkeypatch.delenv("ENDPOINTBLANK_CLIENT_ID", raising=False)
+        monkeypatch.delenv("ENDPOINTBLANK_CLIENT_SECRET", raising=False)
+        configure.client_id = None
+        configure.client_secret = None
+
+    ENVIRON = {"REQUEST_METHOD": "GET", "PATH_INFO": "/x", "HTTP_AUTHORIZATION": "Bearer caller"}
+
+    def test_endpoint_registration_at_boot_logs_a_missing_credential(
+        self, no_credentials, wire_with, caplog
+    ):
+        from flask import Flask
+        from end_point_blank.flask import register_flask_endpoints
+
+        wire = wire_with(response(201, {}))
+
+        register_flask_endpoints(Flask(__name__))
+
+        assert wire.sent == []
+        assert "Endpoint update not sent to EndPointBlank: EndPointBlank is missing client_id" in caplog.text
+
+    @pytest.mark.parametrize("call", ["authenticate", "authorize"])
+    def test_authenticate_and_authorize_answer_none_for_a_missing_credential(
+        self, no_credentials, wire_with, caplog, call
+    ):
+        from end_point_blank.commands.endpoint_authorize import EndpointAuthorize
+
+        wire = wire_with(response(201, {}))
+
+        if call == "authenticate":
+            assert BasicAuthenticate.authenticate(dict(self.ENVIRON), "/x", None) is None
+        else:
+            assert EndpointAuthorize.authorize(dict(self.ENVIRON), "/x", None) is None
+
+        assert wire.sent == []
+        assert "EndPointBlank is missing client_id and client_secret" in caplog.text
+
+    def test_the_authorized_decorator_refuses_with_503(self, no_credentials, wire_with):
+        from flask import Flask
+        from end_point_blank.flask.authorized import authorized
+        from end_point_blank.unauthorized_error import UnauthorizedError
+
+        wire_with(response(201, {}))
+        app = Flask(__name__)
+
+        @app.route("/x")
+        @authorized
+        def view():
+            return "ok"
+
+        with app.test_request_context("/x", headers={"Authorization": "Bearer caller"}):
+            with pytest.raises(UnauthorizedError) as raised:
+                view()
+
+        assert raised.value.status_code == 503
+
+    def test_a_request_error_that_is_not_transport_is_logged_by_class_only(self, wire_with, caplog):
+        wire = wire_with(requests.exceptions.InvalidHeader("Authorization: " + BASIC))
+
+        assert BasicAuthenticate.authenticate(dict(self.ENVIRON), "/x", None) is None
+        EndpointUpdate([]).update()
+
+        assert len(wire.sent) == 2  # One attempt each: nothing to retry.
+        assert "failed unexpectedly (InvalidHeader)" in caplog.text
+        assert BASIC.split()[1] not in caplog.text
+
+    def test_the_writers_log_a_missing_credential(self, no_credentials, wire_with, caplog):
+        from end_point_blank.request_store import RequestStore
+        from end_point_blank.writers.exception_writer import ExceptionWriter
+        from end_point_blank.writers.log_writer import LogWriter
+        from end_point_blank.writers.request_writer import RequestWriter
+        from end_point_blank.writers.response_writer import ResponseWriter
+
+        wire = wire_with(response(201, {}))
+        RequestStore.set(dict(self.ENVIRON))
+        try:
+            RequestWriter.write()
+            ResponseWriter.write(200)
+            LogWriter.write("hello", "info")
+            ExceptionWriter.write(RuntimeError("boom"))
+        finally:
+            RequestStore.clear()
+
+        assert wire.sent == []
+        assert caplog.text.count("EndPointBlank is missing client_id") == 4
 
 
 class TestUserinfoQueryAndFragmentAreStripped:
@@ -246,15 +435,51 @@ class TestUserinfoQueryAndFragmentAreStripped:
             assert secret not in str(raised.value)
             assert secret not in repr(vars(raised.value))
 
-    @pytest.mark.parametrize("url", ["not a url ?token=s3cret", "https:///orders", "https://h:x/"])
-    def test_an_unparseable_url_makes_no_request(self, wire_with, url):
+    @pytest.mark.parametrize(
+        "given",
+        [PROVIDER.replace(".com", ".com:443"), PROVIDER.replace(".com", ".com:"),
+         PROVIDER.replace("https://api.example.com", "HTTPS://API.Example.COM:443")],
+        ids=["default-port", "empty-port", "uppercase-scheme-and-host"],
+    )
+    def test_the_default_port_and_case_are_dropped_as_rails_drops_them(self, wire_with, given):
+        # Parity with the Ruby gem's TargetUrl.strip (sc-1469 review): one
+        # URL, one cache key and one form on the wire.
+        wire = wire_with(response(201, {"token": "tok-abc", "base_url": PROVIDER,
+                                        "expired_at": "2099-01-01T00:00:00Z"}))
+
+        assert Authorization.header(given) == "Bearer tok-abc"
+
+        assert wire.bodies == [{"base_url": PROVIDER}]
+
+    @pytest.mark.parametrize(
+        "url",
+        ["not a url ?token=s3cret", "https:///orders", "https://h:x/", "https://h:0/x",
+         "https://h:65536/x", "ftp://h:21/x?token=s3cret", "ws://h/x", "wss://h/x",
+         "file://host/x", "mailto:s3cret@example.test", "foo://h/x"],
+        ids=["no-scheme", "no-host", "non-numeric-port", "port-0", "port-65536", "ftp", "ws",
+             "wss", "file", "mailto", "unknown-scheme"],
+    )
+    def test_an_unparseable_or_non_http_url_makes_no_request(self, wire_with, url):
+        # Parity with rails#43: only http and https can name a provider, and a
+        # port outside 1..65535 names nothing.
         wire = wire_with(response(201, {}))
 
         with pytest.raises(ValueError) as raised:
             Authorization.header(url)
 
         assert "s3cret" not in str(raised.value)
+        assert "http or https" in str(raised.value)
+        assert AccessTokens().token(url) is None
         assert wire.sent == []
+
+    @pytest.mark.parametrize(
+        "given, stripped",
+        [("https://h:65535/x", "https://h:65535/x"), ("https://h:1/x", "https://h:1/x"),
+         ("HTTP://H:8080/X", "http://h:8080/X")],
+        ids=["port-65535", "port-1", "uppercase-http"],
+    )
+    def test_the_edges_of_what_is_accepted(self, given, stripped):
+        assert strip_url(given) == stripped
 
 
 REJECTED = TokenResult(TokenOutcome.CREDENTIAL_REJECTED, 401, {"error": "invalid"})
@@ -366,11 +591,13 @@ class TestTheError:
 
     def test_a_pickled_cause_keeps_the_unexpected_failure_text(self):
         error = TokenUnavailableError(
-            PROVIDER, TokenResult(TokenOutcome.TRANSPORT_ERROR), cause=RuntimeError("x")
+            PROVIDER, TokenResult(TokenOutcome.TRANSPORT_ERROR), cause=RuntimeError("x"),
+            unexpected=True,
         )
         again = pickle.loads(pickle.dumps(error))
 
         assert str(again) == str(error)
+        assert again.unexpected is True
         assert isinstance(again.cause, RuntimeError)
 
     def test_the_failure_is_kept_without_its_payload(self):
@@ -398,29 +625,29 @@ class TestTheError:
         )
 
     @pytest.mark.parametrize(
-        "failure, cause, reason",
+        "failure, unexpected, reason",
         [
-            (REJECTED, None,
+            (REJECTED, False,
              "intake rejected this application's client credential (HTTP 401); retrying cannot "
              "help -- re-issue the credential"),
-            (TokenResult(TokenOutcome.REQUEST_REJECTED, 422, {"error": "no environment"}), None,
+            (TokenResult(TokenOutcome.REQUEST_REJECTED, 422, {"error": "no environment"}), False,
              "intake refused the token request (HTTP 422); check the URL and that a grant "
              "covers the target"),
-            (BROKEN, None, "intake failed to issue a token (HTTP 500); this may be transient"),
-            (TokenResult(TokenOutcome.SERVER_ERROR), None,
+            (BROKEN, False, "intake failed to issue a token (HTTP 500); this may be transient"),
+            (TokenResult(TokenOutcome.SERVER_ERROR), False,
              "intake failed to issue a token; this may be transient"),
-            (TokenResult(TokenOutcome.TRANSPORT_ERROR), None,
+            (TokenResult(TokenOutcome.TRANSPORT_ERROR), False,
              "intake could not be reached (timeout, connection refused or retries exhausted); "
              "this may be transient"),
-            (TokenResult(TokenOutcome.TRANSPORT_ERROR), RuntimeError("boom"),
+            (TokenResult(TokenOutcome.TRANSPORT_ERROR), True,
              "the token request failed unexpectedly"),
-            (None, None, "the token request failed for an unknown reason"),
+            (None, False, "the token request failed for an unknown reason"),
         ],
         ids=["credential_rejected", "request_rejected", "server_error",
              "server_error-without-status", "transport_error", "mint-raised", "no-result"],
     )
-    def test_the_message_is_exactly_the_published_one(self, failure, cause, reason):
-        error = TokenUnavailableError(PROVIDER, failure, cause=cause)
+    def test_the_message_is_exactly_the_published_one(self, failure, unexpected, reason):
+        error = TokenUnavailableError(PROVIDER, failure, unexpected=unexpected)
 
         assert str(error) == (
             f"Could not mint an EndPointBlank access token for {PROVIDER}: {reason}. "
@@ -432,8 +659,9 @@ class TestTheError:
 class TestOwnIntakeCallsStillUseBasic:
     """intake already holds this service's credential; these must keep working."""
 
-    def test_basic_credentials_encodes_correctly(self):
-        decoded = base64.b64decode(Authorization.basic_credentials()).decode()
+    def test_basic_credentials_encodes_correctly_and_is_deprecated(self):
+        with pytest.warns(DeprecationWarning, match="Authorization.header"):
+            decoded = base64.b64decode(Authorization.basic_credentials()).decode()
         assert decoded == "test-client-id:test-client-secret"
 
     def test_the_intake_header_is_basic_and_mints_nothing(self):

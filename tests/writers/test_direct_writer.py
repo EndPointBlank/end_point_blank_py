@@ -23,6 +23,8 @@ def _config(monkeypatch):
     config._init_defaults()
     config.base_url = "https://intake.test"
     config.log_base_url = "https://log.test"
+    config.client_id = "test-client-id"
+    config.client_secret = "test-client-secret"
     yield config
     config._init_defaults()
 

@@ -217,16 +217,27 @@ text. `error.base_url` is the URL you asked about, stripped to scheme, host, por
 its payload), `error.outcome` its `TokenOutcome` and `error.status` its HTTP status (`None` when
 nothing answered), so you can decide whether a retry can help (`TRANSPORT_ERROR`, `SERVER_ERROR`)
 or not (`CREDENTIAL_REJECTED`, `REQUEST_REJECTED`). A mint that raised is a `TRANSPORT_ERROR`
-whose exception is `error.cause` (and `__cause__`).
+with `error.unexpected` true, whose exception is `error.cause` (and `__cause__`): a bug or a bad
+request (a malformed URL or header), not an unreachable intake. Only a refused or dropped
+connection, a timeout or a body cut off mid-stream is reported as intake being unreachable.
 There is no no-argument form: calling `header()` with no argument raises `TypeError`, and
-`header(None)`, `header("")` or a URL with no scheme or host raises `ValueError` without making a
-request.
+`header(None)`, `header("")` or a URL that is not an absolute http or https URL with a host raises
+`ValueError` without making a request (the Ruby gem raises `ArgumentError` here). That includes any
+other scheme (`ftp`, `ws`, `file` ...) and a port that is not a number in 1..65535.
+
+`header` raises `end_point_blank.ConfigurationError`, not `TokenUnavailableError`, when
+`client_id` or `client_secret` is missing or empty: nothing is sent, and retrying cannot help.
+The SDK's other calls to its intake refuse to send an empty credential too, and log the error
+instead of raising it into your application: endpoint registration logs and carries on,
+`@authenticated` / `@authorized` refuse the request with 503, and the writers drop the record.
 
 The argument is the URL you are about to call. Intake matches it against the registered base
 URLs by longest path prefix, so you do not need to know how the target registered itself —
 `https://api.example.com/orders/widgets/42` resolves to whichever environment owns it. Userinfo,
 query and fragment are removed before the token request; they are never sent to intake, logged, or
-kept on the error.
+kept on the error. The scheme and host are lowercased and a default or empty port is dropped, so
+`HTTPS://API.Example.com:443/orders` is sent as `https://api.example.com/orders`; the path is kept
+as written.
 
 Tokens are cached per application environment, keyed on the canonical base URL intake resolves
 the request to (not on the URL you passed), so a service that calls several targets holds a
@@ -554,6 +565,7 @@ src/end_point_blank/
 ├── masking.py               # Client-side masking engine (JSONPath subset + regex)
 ├── request_store.py         # Thread-local current-request store
 ├── unauthorized_error.py    # UnauthorizedError
+├── configuration_error.py   # ConfigurationError (client_id/client_secret missing)
 ├── token_unavailable_error.py # TokenUnavailableError (no token for a provider call)
 ├── strip_url.py             # strip_url: drops userinfo/query/fragment before a token request
 ├── log_entry.py             # LogEntry value object

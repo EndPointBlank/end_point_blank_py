@@ -21,3 +21,18 @@ if not settings.configured:
         DEFAULT_CHARSET="utf-8",
     )
     django.setup()
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _client_credentials(monkeypatch):
+    """Every call to intake presents Basic client_id:client_secret, and since
+    sc-1469 a missing one raises ``ConfigurationError`` instead of sending
+    ``None:None``. Most tests are about something else, so they get a
+    credential from the environment by default; a test about the credential
+    sets or deletes these itself, and one that configures ``client_id`` wins
+    over them."""
+    monkeypatch.setenv("ENDPOINTBLANK_CLIENT_ID", "env-client-id")
+    monkeypatch.setenv("ENDPOINTBLANK_CLIENT_SECRET", "env-client-secret")

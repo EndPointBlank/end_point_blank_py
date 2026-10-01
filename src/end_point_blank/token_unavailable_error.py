@@ -55,9 +55,11 @@ class TokenUnavailableError(Exception):
         failure. Distinguishes, say, a 400 from a 422 inside
         :attr:`~TokenOutcome.REQUEST_REJECTED`.
 
-    A mint that raised is reported as :attr:`~TokenOutcome.TRANSPORT_ERROR`
-    with the exception as ``cause`` (and ``__cause__``); its text is
-    deliberately not copied into the message.
+    :ivar unexpected: ``True`` when the mint raised rather than reporting a
+        failure -- a bug, not an unreachable intake. Such a mint is reported as
+        :attr:`~TokenOutcome.TRANSPORT_ERROR` with the exception as ``cause``
+        (and ``__cause__``); its text is deliberately not copied into the
+        message. The Ruby gem's ``unexpected?``.
     """
 
     def __init__(
@@ -65,15 +67,17 @@ class TokenUnavailableError(Exception):
         base_url: Optional[str],
         failure: Optional[TokenResult] = None,
         cause: Optional[BaseException] = None,
+        unexpected: bool = False,
     ) -> None:
         stripped = strip_url(base_url)
-        super().__init__(self._message(stripped, failure, cause))
+        super().__init__(self._message(stripped, failure, unexpected))
         self.base_url = stripped
         self.failure = (
             TokenResult(failure.outcome, failure.status) if failure is not None else None
         )
         self.status: Optional[int] = failure.status if failure is not None else None
         self.cause = cause
+        self.unexpected = unexpected
         if cause is not None:
             self.__cause__ = cause
 
@@ -91,15 +95,15 @@ class TokenUnavailableError(Exception):
     def __reduce__(self):
         # Exception's default rebuilds from self.args (the message) alone, which
         # would pass the message in as base_url and lose the failure.
-        return (self.__class__, (self.base_url, self.failure, self.cause))
+        return (self.__class__, (self.base_url, self.failure, self.cause, self.unexpected))
 
     @staticmethod
     def _message(
-        stripped: Optional[str], failure: Optional[TokenResult], cause: Optional[BaseException]
+        stripped: Optional[str], failure: Optional[TokenResult], unexpected: bool
     ) -> str:
         return (
             f"Could not mint an EndPointBlank access token for {_describe_url(stripped)}: "
-            f"{_reason(failure, cause)}. {CREDENTIALS_NEVER_SENT}"
+            f"{_reason(failure, unexpected)}. {CREDENTIALS_NEVER_SENT}"
         )
 
 
@@ -110,12 +114,12 @@ def _describe_url(stripped: Optional[str]) -> str:
     return stripped
 
 
-def _reason(failure: Optional[TokenResult], cause: Optional[BaseException]) -> str:
+def _reason(failure: Optional[TokenResult], unexpected: bool) -> str:
     """The same fixed texts in every SDK (sc-1469). Never intake's response body
     or an exception's message or class name: neither is ours to vouch for, and
     either may carry anything."""
     # Before the outcome, because a mint that raised is also TRANSPORT_ERROR.
-    if cause is not None:
+    if unexpected:
         return "the token request failed unexpectedly"
     if failure is None:
         # Unreachable from Authorization.header, which always passes the result
