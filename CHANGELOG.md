@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`end_point_blank.management.ManagementClient`, a client for the organization management API
+  (sc-1502).** A target organization can now script its setup instead of hand-rolling HTTP calls:
+  the organization (`get_organization`), API packages and what they publish, the endpoint lookup,
+  clients (invites, with optional contacts, pre-assigned `packages` and `grants`, and managed
+  clients), package assignments, direct grants, applications, environments, application
+  environments, runtime credentials (create, rotate, revoke) and claim invites, plus
+  `for_managed_client(id)` for the same application/environment/credential calls on a managed
+  client under `/api/v1/clients/<id>/...`. Answers are typed dataclasses; every list has a
+  one-page `list_*` returning a `Page` and an auto-paging `iter_*` generator.
+
+  It is separate from the runtime SDK: configured only by its constructor (default base URL
+  `https://app.endpointblank.com`), it sends only the management key, as
+  `Authorization: Bearer epb_mk_...`, and refuses anything else at construction with
+  `ConfigurationError`. The key is redacted from its `repr` and never appears in an error or a
+  log line; a credential's `client_secret` is returned to the caller and never logged or shown
+  in a `repr`. Every POST carries an `Idempotency-Key` (generated, or the caller's), reused on
+  automatic retries: a 429 after `Retry-After`, and a 5xx or lost connection for GET, DELETE and
+  POST (never PATCH), up to `max_retries` (default 2, `0` to turn off). Errors are raised as
+  `ManagementApiError` subclasses carrying `code`, `message`, `details`, `status` and
+  `retry_after`; unknown codes are raised with the code as sent. Uses the SDK's existing
+  `requests` session; no new dependency.
+
 ## 0.12.0
 
 ### Breaking changes

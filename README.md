@@ -503,6 +503,174 @@ literal `$`; an out-of-range or non-participating group expands to `""`).
 Masking never raises: an uncompilable regex, a blank/malformed/unsupported path, a non-JSON body,
 or a missing/`None` field all degrade to a no-op. Stacktraces and log messages are never masked.
 
+## Management API
+
+`end_point_blank.management.ManagementClient` calls the EndPointBlank organization management
+API (`/api/v1` on the portal), so a script or service can set up an organization without the
+portal: its API packages, clients, package assignments and direct grants, applications,
+environments and runtime credentials, and the clients you manage for your customers.
+
+It is separate from the runtime SDK above. It is configured only by its constructor (never by
+`configure()` or an `ENDPOINTBLANK_*` variable), and the only credential it sends is a
+**management API key** (`epb_mk_...`, created in the portal), as `Authorization: Bearer <key>`,
+to the portal. Your runtime `client_id`/`client_secret` are never sent to `/api/v1`, and the
+management key is never sent to intake. The key is never shown in an error, a log line or the
+client's `repr`.
+
+```python
+import os
+from end_point_blank.management import ManagementClient
+
+mgmt = ManagementClient(
+    key=os.environ["EPB_MANAGEMENT_KEY"],    # epb_mk_...; anything else raises ConfigurationError
+    # base_url="https://app.endpointblank.com",  # the default
+)
+
+org = mgmt.get_organization()
+print(org.name, org.key.scope)               # "read" or "write"
+```
+
+### Lists and pagination
+
+Every list has a one-page call returning a `Page` (`items` and `next_cursor`; `limit` is 1-100,
+default 50 on the server) and an `iter_*` generator that fetches page after page as you go:
+
+```python
+page = mgmt.list_clients(limit=20)
+for client in page:
+    print(client.name, client.status)
+if page.next_cursor:
+    page = mgmt.list_clients(limit=20, after=page.next_cursor)
+
+for package in mgmt.iter_api_packages():     # every page
+    print(package.id, package.name)
+```
+
+### Invite a client and assign a package
+
+The key's organization is the target (the provider); the client it invites is the source.
+
+```python
+package = mgmt.create_api_package("Orders read")
+endpoint = mgmt.list_endpoints(version="1.0.0", limit=1).items[0]
+production = next(e for e in mgmt.iter_environments() if e.production)
+mgmt.add_package_endpoint(
+    package.id,
+    application_id=endpoint.application_id,
+    endpoint_id=endpoint.id,                 # omit for every endpoint of the application
+    environment_id=production.id,
+)
+
+client = mgmt.create_client(
+    "Globex",
+    contacts=[{"email": "dev@globex.example", "first_name": "Ada", "last_name": "Lee"}],
+)
+print(client.invite_code)                    # send this to the client; it accepts in the portal
+
+# Before the client accepts this is recorded as "pending" and applied when it does.
+assignment = mgmt.assign_package(client.id, api_package_id=package.id, environment_id=production.id)
+```
+
+Packages and grants can also be set up in the invite itself:
+`create_client(name, packages=[{"api_package_id": ..., "environment_id": ...}], grants=[...])`.
+
+### Credentials
+
+```python
+app_env = mgmt.list_application_environments(app.id).items[0]
+credential = mgmt.create_credential(app_env.id)
+store_secret(credential.client_id, credential.client_secret)   # shown this once
+
+rotated = mgmt.rotate_credential(credential.id)  # new secret; the old one works for the grace window
+store_secret(rotated.client_id, rotated.client_secret)
+
+mgmt.revoke_credential(credential.id)
+```
+
+`client_secret` is set only on the answer to a create or a rotate, is left out of the
+credential's `repr`, and is never logged. Reads (`get_credential`, `list_credentials`) return
+metadata only.
+
+### Managed clients
+
+A managed client is a client organization you create and run for your customer until they
+claim it. `for_managed_client(id)` gives the same application, environment and credential calls,
+sent under `/api/v1/clients/<id>/...`:
+
+```python
+managed = mgmt.create_managed_client("Initech")
+initech = mgmt.for_managed_client(managed.id)
+
+env = initech.create_environment("production-eu", "eu.initech.example")
+app = initech.create_application("Initech billing", {env.id: "https://billing.initech.example"})
+app_env = initech.list_application_environments(app.id).items[0]
+credential = initech.create_credential(app_env.id)        # hand this to your customer's service
+
+mgmt.assign_package(managed.id, api_package_id=package.id, environment_id=production.id)
+mgmt.send_claim_invite(managed.id, "owner@initech.example")
+```
+
+Once the customer claims it, the `initech` calls answer `not_found`. A managed client that still
+holds credentials can't be deleted: revoke them first.
+
+### Errors
+
+Every failure raises `ManagementApiError` (or a subclass) with `code`, `message`, `details`,
+`status` and, on a 429, `retry_after`. Match on `code` -- `ErrorCode` lists the documented
+codes, and a code this version does not know is still raised with the code as sent:
+
+```python
+from end_point_blank.management import (
+    ErrorCode, ManagementApiError, NotFoundError, PlanLimitError, ValidationFailedError,
+)
+
+try:
+    mgmt.assign_package(client.id, api_package_id=package.id, environment_id=staging.id)
+except ValidationFailedError as e:
+    print(e.details)                          # {"field": ["message", ...]}
+except PlanLimitError:
+    ...                                       # 402: upgrade the plan
+except ManagementApiError as e:
+    if e.code == ErrorCode.NOTHING_PUBLISHED_IN_ENVIRONMENT:
+        print(e.message, e.details["published_in"])
+    elif e.code == "already_assigned":
+        ...
+    else:
+        raise
+```
+
+| Class | Codes |
+|---|---|
+| `AuthenticationError` (401) | `missing_key`, `invalid_key`, `runtime_credential_refused` |
+| `PlanLimitError` (402) | `plan_limit` |
+| `InsufficientScopeError` (403) | `insufficient_scope` (a read key tried to write) |
+| `NotFoundError` (404) | `not_found` |
+| `ConflictError` (409) | `idempotency_request_in_progress`, `intake_credential`, `grant_revoked_concurrently` |
+| `IdempotencyReplayUnavailableError` (409) | `idempotency_replay_unavailable` |
+| `ValidationFailedError` (422) | `validation_failed` |
+| `RequestRefusedError` (422) | every other 422 refusal (`has_dependents`, `already_assigned`, `delete_refused`, ...) |
+| `RateLimitedError` (429) | `rate_limited` |
+| `ServerError` / `ServiceUnavailableError` (5xx / 503) | `internal_server_error` / `audit_unavailable`, `intake_unavailable` |
+| `BadRequestError` (400) | `invalid_pagination`, `invalid_idempotency_key`, `bad_request` |
+| `ManagementConnectionError` | `connection_error`: no response arrived |
+
+### Retries and idempotency
+
+Every POST sends an `Idempotency-Key` header -- a generated UUID, or the `idempotency_key=` you
+pass -- and the same key on each automatic retry, so a retried POST runs at most once. A call is
+retried up to `max_retries` times (default 2; `0` turns retries off):
+
+- a 429 after its `Retry-After` (a wait longer than `max_retry_wait`, default 60 seconds, raises
+  `RateLimitedError` instead);
+- a 5xx or a request that never got an answer, with backoff, for GET, DELETE and POST -- never
+  for PATCH;
+- a POST answered `idempotency_request_in_progress`, with the same key.
+
+A credential create or rotate retried after it already succeeded is answered
+`idempotency_replay_unavailable`: the secret is shown only once, so it is raised as
+`IdempotencyReplayUnavailableError` and never retried. Read the credential (`error.location`
+names it) and rotate it if the secret was lost.
+
 ## Framework integration
 
 ### WSGI (any framework)
@@ -607,6 +775,7 @@ src/end_point_blank/
 ├── commands/                  # HTTP command objects: authorize, authenticate, endpoint
 │                              # update, access-token generation, version/route-pattern finders
 ├── tokens/                    # Access-token cache, one entry per application environment
+├── management/                # ManagementClient for the organization management API (/api/v1)
 ├── flask/                     # authenticated/authorized/versioned decorators + endpoint registrar
 └── django/                    # middleware, decorators, versioned, endpoint registrar
 tests/                        # pytest suite mirroring the src/ layout
