@@ -577,6 +577,7 @@ Packages and grants can also be set up in the invite itself:
 ### Credentials
 
 ```python
+app = mgmt.create_application("Orders", {production.id: "https://orders.example"})
 app_env = mgmt.list_application_environments(app.id).items[0]
 credential = mgmt.create_credential(app_env.id)
 store_secret(credential.client_id, credential.client_secret)   # shown this once
@@ -665,6 +666,9 @@ retried up to `max_retries` times (default 2; `0` turns retries off):
 - a 5xx or a request that never got an answer, with backoff, for GET, DELETE and POST -- never
   for PATCH;
 - a POST answered `idempotency_request_in_progress`, with the same key.
+
+A DELETE whose first attempt took effect but whose answer was lost raises `NotFoundError` on
+its retry: the resource is gone either way.
 
 A credential create or rotate retried after it already succeeded is answered
 `idempotency_replay_unavailable`: the secret is shown only once, so it is raised as

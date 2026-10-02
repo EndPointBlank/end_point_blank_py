@@ -17,7 +17,9 @@
   It is separate from the runtime SDK: configured only by its constructor (default base URL
   `https://app.endpointblank.com`), it sends only the management key, as
   `Authorization: Bearer epb_mk_...`, and refuses anything else at construction with
-  `ConfigurationError`. The key is redacted from its `repr` and never appears in an error or a
+  `ConfigurationError` (including a key with a line break, space or other character app_portal
+  never mints). An id that is empty or made only of dots (`.`, `..`) raises `ValueError` before
+  any request, so it can never resolve to a different route. The key is redacted from its `repr` and never appears in an error or a
   log line; a credential's `client_secret` is returned to the caller and never logged or shown
   in a `repr`. Every POST carries an `Idempotency-Key` (generated, or the caller's), reused on
   automatic retries: a 429 after `Retry-After`, and a 5xx or lost connection for GET, DELETE and

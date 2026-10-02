@@ -114,14 +114,24 @@ def error_body(code, message="msg", details=None):
 
 class TestConstruction:
     @pytest.mark.parametrize(
-        "key", [None, "", "   ", "epb_mk_", "abc", "Basic abc", RUNTIME_SECRET, 123, "epb_xx_123"]
+        "key",
+        [
+            None, "", "   ", "epb_mk_", "abc", "Basic abc", RUNTIME_SECRET, 123, "epb_xx_123",
+            "epb_mk_SECRETPART\nx", "epb_mk_SECRET\r\nInjected: 1", "epb_mk_SECRET PART",
+            "epb_mk_SECRET\tPART", "epb_mk_SECRET+PART/=", "epb_mk_SECRÉT",
+        ],
     )
     def test_refuses_anything_but_a_management_key(self, key):
         with pytest.raises(ConfigurationError) as info:
             ManagementClient(key)
-        assert "epb_mk_" in str(info.value)
+        text = str(info.value) + repr(info.value) + repr(info.value.args)
+        assert "epb_mk_" in text
         if isinstance(key, str) and key.strip() and key != "epb_mk_":
-            assert key not in str(info.value)
+            assert key not in text
+        assert "SECRET" not in text
+
+    def test_accepts_a_key_as_app_portal_mints_it(self):
+        ManagementClient("epb_mk_" + "Ab9-_" * 8)
 
     def test_defaults_to_the_portal(self):
         assert ManagementClient(KEY).base_url == "https://app.endpointblank.com"
@@ -201,6 +211,28 @@ class TestHeaders:
     def test_refuses_an_empty_id(self, mgmt, bad):
         with pytest.raises(ValueError):
             mgmt.get_application(bad)
+
+    # rsps has no routes registered, so any request sent would fail the test.
+    @pytest.mark.parametrize("dots", [".", "..", "..."])
+    @pytest.mark.parametrize("call", [
+        lambda m, d: m.delete_client_grant("c1", d),
+        lambda m, d: m.unassign_package("c1", d),
+        lambda m, d: m.remove_package_endpoint("p1", d),
+        lambda m, d: m.delete_application_environment("a1", d),
+        lambda m, d: m.delete_client(d),
+        lambda m, d: m.revoke_credential(d),
+        lambda m, d: m.for_managed_client(d),
+        lambda m, d: m.for_managed_client("mc1").delete_application_environment("a1", d),
+    ], ids=["grant", "assignment", "package-endpoint", "app-env", "client", "credential", "managed-client",
+            "managed-app-env"])
+    def test_refuses_a_dot_segment_id_without_a_request(self, mgmt, rsps, call, dots):
+        with pytest.raises(ValueError):
+            call(mgmt, dots)
+        assert len(rsps.calls) == 0
+
+    def test_ids_with_dots_inside_are_fine(self, mgmt, rsps):
+        rsps.get(API + "/applications/v1.2..3", json={"data": {"id": "v1.2..3"}})
+        assert mgmt.get_application("v1.2..3").id == "v1.2..3"
 
     def test_accepts_a_uuid_id(self, mgmt, rsps):
         some = uuid.uuid4()
@@ -483,6 +515,22 @@ class TestPagination:
         with pytest.raises(ValueError):
             mgmt.list_clients(limit=limit)
 
+    @pytest.mark.parametrize("limit", [0, 101, "10"])
+    def test_an_iterator_refuses_a_bad_limit_when_made(self, mgmt, limit):
+        with pytest.raises(ValueError):
+            mgmt.iter_clients(limit=limit)
+        with pytest.raises(ValueError):
+            mgmt.iter_client_grants("c1", limit=limit)
+
+    def test_a_repeated_cursor_stops_paging_loudly(self, mgmt, rsps):
+        rsps.get(API + "/clients", json={"data": [{"id": "c1"}], "next_cursor": "same"})
+        rsps.get(API + "/clients", json={"data": [{"id": "c2"}], "next_cursor": "same"})
+        seen = []
+        with pytest.raises(InvalidResponseError):
+            for client in mgmt.iter_clients():
+                seen.append(client.id)
+        assert seen == ["c1", "c2"] and len(rsps.calls) == 2
+
     @pytest.mark.parametrize("limit", [1, 100])
     def test_accepts_the_limit_bounds(self, mgmt, rsps, limit):
         rsps.get(API + "/clients", json={"data": [], "next_cursor": None})
@@ -508,7 +556,7 @@ class TestIdempotency:
         mgmt.assign_package("c1", api_package_id="p1", environment_id="e1", idempotency_key="assign-c1-p1")
         assert request(rsps).headers["Idempotency-Key"] == "assign-c1-p1"
 
-    @pytest.mark.parametrize("key", ["", "   ", "x" * 256])
+    @pytest.mark.parametrize("key", ["", "   ", "x" * 256, "é" * 128])
     def test_refuses_a_bad_key_without_a_request(self, mgmt, key):
         with pytest.raises(ValueError):
             mgmt.create_api_package("Gold", idempotency_key=key)
@@ -740,6 +788,18 @@ class TestErrors:
         with pytest.raises(InvalidResponseError):
             mgmt.list_clients()
 
+    def test_any_other_request_error_is_named_by_class_only(self, mgmt, rsps, caplog):
+        caplog.set_level(logging.DEBUG)
+        rsps.get(API + "/organization", body=requests.exceptions.InvalidHeader(f"bad header value: 'Bearer {KEY}'"))
+        with pytest.raises(ManagementApiError) as info:
+            mgmt.get_organization()
+        error = info.value
+        assert error.code == ErrorCode.REQUEST_ERROR and "InvalidHeader" in error.message
+        assert error.__cause__ is None and error.__suppress_context__
+        for text in (str(error), repr(error), repr(vars(error)), caplog.text):
+            assert KEY not in text
+        assert len(rsps.calls) == 1
+
     def test_errors_never_carry_the_key(self, mgmt, rsps):
         rsps.get(API + "/organization", json=error_body("invalid_key", "The key is invalid."), status=401)
         with pytest.raises(AuthenticationError) as info:
@@ -764,7 +824,7 @@ DOCUMENTED_CODES = {
 
 
 def test_error_code_lists_exactly_the_documented_codes():
-    sdk_own = {"connection_error", "invalid_response", "assignment_derives_nothing"}
+    sdk_own = {"connection_error", "request_error", "invalid_response", "assignment_derives_nothing"}
     assert {c.value for c in ErrorCode} - sdk_own == DOCUMENTED_CODES
 
 

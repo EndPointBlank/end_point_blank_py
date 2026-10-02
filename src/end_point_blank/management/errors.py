@@ -30,8 +30,9 @@ class ErrorCode(str, Enum):
     the same test. ``error.code`` itself is always a plain ``str``: an
     unknown code is kept as sent rather than refused.
 
-    ``CONNECTION_ERROR`` and ``INVALID_RESPONSE`` are this SDK's own, for a request that never got an answer and an answer it could
-    not read; the API never sends them.
+    ``CONNECTION_ERROR``, ``REQUEST_ERROR`` and ``INVALID_RESPONSE`` are this
+    SDK's own, for a request that never got an answer, one that could not be
+    sent, and an answer it could not read; the API never sends them.
     """
 
     # Authentication and limits
@@ -87,6 +88,7 @@ class ErrorCode(str, Enum):
     ASSIGNMENT_DERIVES_NOTHING = "assignment_derives_nothing"
     # This SDK's own
     CONNECTION_ERROR = "connection_error"
+    REQUEST_ERROR = "request_error"
     INVALID_RESPONSE = "invalid_response"
 
 

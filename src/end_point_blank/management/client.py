@@ -20,6 +20,7 @@ from __future__ import annotations
 import email.utils
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -61,6 +62,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://app.endpointblank.com"
 KEY_PREFIX = "epb_mk_"
+# app_portal mints keys as "epb_mk_" + URL-safe base64 without padding. Anything
+# else -- a line break or space pasted into the middle of one -- is refused at
+# construction, before requests could quote it back in an InvalidHeader.
+_KEY_FORMAT = re.compile(r"epb_mk_[A-Za-z0-9_-]+")
 API_PREFIX = "/api/v1"
 MAX_PAGE_SIZE = 100
 
@@ -86,12 +91,22 @@ Timeout = Union[float, Tuple[float, float]]
 
 
 def _seg(value: Any, name: str) -> str:
-    """An id for a path segment: a non-empty string (or a UUID), escaped so it
-    cannot change the path."""
+    """
+    An id for a path segment: a non-empty string (or a UUID), escaped so it
+    cannot change the path.
+
+    An id made only of dots is refused: ``quote`` leaves ``.`` and ``..`` as
+    they are, and they would be resolved as dot-segments, so
+    ``delete_client_grant("c1", "..")`` would send ``DELETE /clients/c1/`` and
+    remove the whole client. Percent-encoding them is not enough, since a
+    server may decode ``%2E`` before routing.
+    """
     if isinstance(value, uuid.UUID):
         value = str(value)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string id")
+    if set(value) == {"."}:
+        raise ValueError(f"{name} must be an id, not a dot path segment")
     return quote(value, safe="")
 
 
@@ -180,8 +195,9 @@ class _Transport:
             # Generated once, before the first attempt, so every retry of this
             # call presents the same key and the API runs it at most once.
             key = idempotency_key if idempotency_key is not None else str(uuid.uuid4())
-            if not isinstance(key, str) or not key.strip() or len(key) > 255:
-                raise ValueError("idempotency_key must be 1 to 255 characters")
+            # The API counts bytes, not characters.
+            if not isinstance(key, str) or not key.strip() or len(key.encode("utf-8")) > 255:
+                raise ValueError("idempotency_key must be 1 to 255 bytes")
             headers["Idempotency-Key"] = key
 
         attempt = 0
@@ -204,7 +220,7 @@ class _Transport:
                     method=method,
                     path=path,
                 )
-                delay = self._delay_after_failure(method, attempt) if method in _RETRY_AFTER_FAILURE else None
+                delay = self._backoff(attempt) if method in _RETRY_AFTER_FAILURE else None
                 if delay is None:
                     raise error from None
                 logger.warning(
@@ -214,6 +230,17 @@ class _Transport:
                 self.sleep(delay)
                 attempt += 1
                 continue
+            except requests.RequestException as exc:
+                # Any other request error (an InvalidHeader, an InvalidURL) is
+                # a bug no retry fixes. It is named by class only, as above:
+                # requests quotes the offending header value -- possibly the
+                # key -- in an InvalidHeader's message.
+                raise ManagementApiError(
+                    f"The request could not be sent ({type(exc).__name__}).",
+                    code=ErrorCode.REQUEST_ERROR.value,
+                    method=method,
+                    path=path,
+                ) from None
 
             if 200 <= response.status_code < 300:
                 return self._parse_success(response, method, path), response.headers
@@ -229,7 +256,7 @@ class _Transport:
             self.sleep(delay)
             attempt += 1
 
-    def _delay_after_failure(self, method: str, attempt: int) -> Optional[float]:
+    def _backoff(self, attempt: int) -> Optional[float]:
         if attempt >= self.max_retries:
             return None
         return min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** attempt))
@@ -246,9 +273,9 @@ class _Transport:
         if method not in _RETRY_AFTER_FAILURE:
             return None
         if error.code == ErrorCode.IDEMPOTENCY_REQUEST_IN_PROGRESS:
-            return self._delay_after_failure(method, attempt)
+            return self._backoff(attempt)
         if error.status is not None and error.status >= 500:
-            return self._delay_after_failure(method, attempt)
+            return self._backoff(attempt)
         return None
 
     @staticmethod
@@ -305,12 +332,26 @@ class _Transport:
 
 
 def _iterate(fetch: Callable[..., Page], limit: Optional[int], **kwargs: Any) -> Iterator[Any]:
+    """Every item of every page. ``limit`` is checked now, not on the first
+    ``next()``, like the ids the nested iterators check."""
+    _check_limit(limit)
+    return _pages(fetch, limit, kwargs)
+
+
+def _pages(fetch: Callable[..., Page], limit: Optional[int], kwargs: Dict[str, Any]) -> Iterator[Any]:
     after = None
     while True:
         page = fetch(limit=limit, after=after, **kwargs)
         yield from page.items
         if not page.next_cursor:
             return
+        if page.next_cursor == after:
+            # A server answering the same cursor again would otherwise loop
+            # forever; stopping quietly would hide the missing rows.
+            raise InvalidResponseError(
+                "The API answered the same next_cursor twice, so paging stopped.",
+                code=ErrorCode.INVALID_RESPONSE.value,
+            )
         after = page.next_cursor
 
 
@@ -523,7 +564,8 @@ class _OrganizationResources:
 
     def revoke_credential(self, credential_id: str) -> Deleted:
         """Revokes a credential (``DELETE /credentials/:id``): removed from
-        intake, then deleted."""
+        intake, then deleted. Like every delete, one retried after a lost
+        connection whose first attempt succeeded raises ``NotFoundError``."""
         return self._deleted(f"/credentials/{_seg(credential_id, 'credential_id')}")
 
 
@@ -568,6 +610,10 @@ class ManagementClient(_OrganizationResources):
         GET, DELETE and POST (every POST carries an ``Idempotency-Key``, the
         same one on each retry), never for PATCH; a POST answered
         ``idempotency_request_in_progress`` is retried with the same key.
+        A DELETE whose first attempt took effect but whose answer was lost
+        comes back from its retry as
+        :class:`~end_point_blank.management.errors.NotFoundError`: the
+        resource is gone either way.
     :param max_retry_wait: The longest ``Retry-After`` (seconds) waited out
         before retrying (default 60). A longer one raises
         :class:`~end_point_blank.management.errors.RateLimitedError` at once.
@@ -590,12 +636,13 @@ class ManagementClient(_OrganizationResources):
         sleep: Callable[[float], None] = time.sleep,
         session: Optional[requests.Session] = None,
     ) -> None:
-        if not isinstance(key, str) or not key.strip().startswith(KEY_PREFIX) or len(key.strip()) <= len(KEY_PREFIX):
+        if not isinstance(key, str) or not _KEY_FORMAT.fullmatch(key.strip()):
             # The value is not repeated: a runtime client_secret pasted here by
             # mistake must not end up in a traceback.
             raise ConfigurationError(
-                "ManagementClient needs a management API key, which starts with "
-                f"'{KEY_PREFIX}' (create one in the EndPointBlank portal). Runtime "
+                "ManagementClient needs a management API key: 'epb_mk_' followed by "
+                "letters, digits, '-' and '_' only (create one in the EndPointBlank "
+                "portal; check for a line break or space pasted into it). Runtime "
                 "client_id/client_secret credentials can't be used for the management API."
             )
         if isinstance(max_retries, bool) or not isinstance(max_retries, int) or max_retries < 0:
