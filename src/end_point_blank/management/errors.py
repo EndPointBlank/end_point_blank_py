@@ -74,6 +74,7 @@ class ErrorCode(str, Enum):
     CLIENT_ACCEPTED = "client_accepted"
     CLIENT_NOT_MANAGED = "client_not_managed"
     ALREADY_A_MEMBER = "already_a_member"
+    RETURN_TO_NOT_REGISTERED = "return_to_not_registered"
     MANAGED_CLIENT_HAS_CREDENTIALS = "managed_client_has_credentials"
     API_PACKAGE_NOT_FOUND = "api_package_not_found"
     ENVIRONMENT_NOT_FOUND = "environment_not_found"

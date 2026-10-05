@@ -843,10 +843,26 @@ class ManagementClient(_OrganizationResources):
         credentials is refused with ``managed_client_has_credentials``."""
         return self._deleted(f"/clients/{_seg(client_id, 'client_id')}")
 
-    def send_claim_invite(self, client_id: str, email: str, *, idempotency_key: Optional[str] = None) -> ClaimInvite:
-        """Emails your customer an invite to claim a managed client."""
+    def send_claim_invite(
+        self,
+        client_id: str,
+        email: str,
+        *,
+        return_to: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> ClaimInvite:
+        """
+        Emails your customer an invite to claim a managed client.
+
+        ``return_to``, when given, is where EndPointBlank sends the customer's
+        browser once they have claimed it. It must equal, byte for byte, a
+        claim return URL your organization registered in EndPointBlank;
+        anything else is refused with 422 ``return_to_not_registered``. Left
+        out of the request when not given.
+        """
         path = f"/clients/{_seg(client_id, 'client_id')}/claim_invites"
-        return self._one(ClaimInvite, "POST", path, body={"email": email}, idempotency_key=idempotency_key)
+        body = _compact({"email": email, "return_to": return_to})
+        return self._one(ClaimInvite, "POST", path, body=body, idempotency_key=idempotency_key)
 
     # -- package assignments -------------------------------------------------
 
