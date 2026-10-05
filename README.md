@@ -608,8 +608,14 @@ app_env = initech.list_application_environments(app.id).items[0]
 credential = initech.create_credential(app_env.id)        # hand this to your customer's service
 
 mgmt.assign_package(managed.id, api_package_id=package.id, environment_id=production.id)
-mgmt.send_claim_invite(managed.id, "owner@initech.example")
+mgmt.send_claim_invite(managed.id, "owner@initech.example",
+                       return_to="https://app.example.com/welcome")   # optional
 ```
+
+`return_to` is optional: once the customer claims the account, EndPointBlank sends their
+browser there. It must equal, byte for byte, a claim return URL your organization registered in
+EndPointBlank; anything else is refused with 422 `return_to_not_registered`
+(`RequestRefusedError`). Without it, nothing is sent and the customer stays in EndPointBlank.
 
 Once the customer claims it, the `initech` calls answer `not_found`. A managed client that still
 holds credentials can't be deleted: revoke them first.

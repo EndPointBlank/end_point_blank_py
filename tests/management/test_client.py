@@ -298,6 +298,11 @@ CASES = [
     ("send_claim_invite", lambda m: m.send_claim_invite("c1", "owner@initech.test"), "POST",
      "/clients/c1/claim_invites", {}, {"email": "owner@initech.test"}, 201,
      {"data": {"client_id": "c1", "email": "owner@initech.test"}}, ClaimInvite),
+    ("send_claim_invite with return_to",
+     lambda m: m.send_claim_invite("c1", "owner@initech.test", return_to="https://app.example.test/welcome"),
+     "POST", "/clients/c1/claim_invites", {},
+     {"email": "owner@initech.test", "return_to": "https://app.example.test/welcome"}, 201,
+     {"data": {"client_id": "c1", "email": "owner@initech.test"}}, ClaimInvite),
     # package assignments
     ("list_client_packages", lambda m: m.list_client_packages("c1"), "GET", "/clients/c1/packages", {}, None, 200,
      PAGE, Page),
@@ -742,6 +747,7 @@ class TestErrors:
         (422, "has_dependents", RequestRefusedError),
         (422, "delete_refused", RequestRefusedError),
         (422, "nothing_published_in_environment", RequestRefusedError),
+        (422, "return_to_not_registered", RequestRefusedError),
         (503, "audit_unavailable", ServiceUnavailableError),
         (500, "internal_server_error", ServerError),
     ])
@@ -751,6 +757,18 @@ class TestErrors:
         with pytest.raises(cls) as info:
             client.delete_application("a1")
         assert info.value.code == code and info.value.status == status
+
+    def test_claim_invite_without_return_to_leaves_it_out_of_the_body(self, mgmt, rsps):
+        rsps.post(API + "/clients/c1/claim_invites", json={"data": {"client_id": "c1"}}, status=201)
+        mgmt.send_claim_invite("c1", "owner@initech.test")
+        assert "return_to" not in body_of(request(rsps))
+
+    def test_an_unregistered_return_to_is_refused(self, mgmt, rsps):
+        rsps.post(API + "/clients/c1/claim_invites", json=error_body("return_to_not_registered"), status=422)
+        with pytest.raises(RequestRefusedError) as info:
+            mgmt.send_claim_invite("c1", "owner@initech.test", return_to="https://evil.example.test/")
+        assert info.value.code == ErrorCode.RETURN_TO_NOT_REGISTERED and info.value.status == 422
+        assert body_of(request(rsps))["return_to"] == "https://evil.example.test/"
 
     def test_an_unknown_code_still_surfaces(self, mgmt, rsps):
         rsps.post(API + "/clients/c1/grants", json=error_body("brand_new_refusal", "New."), status=422)
@@ -817,7 +835,7 @@ DOCUMENTED_CODES = {
     "invalid_environment_base_urls", "api_package_assigned", "intake_sync_failed", "delete_refused",
     "intake_credential", "intake_rejected", "intake_unavailable", "invalid_contacts", "invalid_packages",
     "invalid_grants", "invalid_managed", "client_not_accepted", "client_accepted", "client_not_managed",
-    "already_a_member", "managed_client_has_credentials", "api_package_not_found", "environment_not_found",
+    "already_a_member", "return_to_not_registered", "managed_client_has_credentials", "api_package_not_found", "environment_not_found",
     "already_assigned", "nothing_published_in_environment", "application_not_found", "endpoint_not_found",
     "environment_not_in_application", "already_granted", "grant_revoked_concurrently",
 }

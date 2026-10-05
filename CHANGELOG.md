@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`ManagementClient.send_claim_invite` takes an optional `return_to` (sc-1515).** Once your
+  customer claims the managed client, EndPointBlank redirects their browser to `return_to`. It
+  must equal, byte for byte, a claim return URL your organization registered in EndPointBlank;
+  otherwise the API answers 422 `return_to_not_registered`, raised as `RequestRefusedError` and
+  now listed in `ErrorCode` as `RETURN_TO_NOT_REGISTERED`. It is sent only when given, so a call
+  without it sends the same request as before.
+
 ## 0.13.0
 
 ### Added
