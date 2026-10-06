@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from ..commands.route_pattern_finder import RoutePatternFinder
 from ..configuration import Configuration, LogMode
 from ..request_store import RequestStore
+from ..sensitive_headers import without_sensitive_headers
 from .direct_writer import DirectWriter
 from .delayed_writer import DelayedWriter
 from ..commands._http import log_unsent
@@ -55,7 +56,8 @@ class ResponseWriter:
                 "env": config.environment,
                 "uuid": uuid,
                 "status": status,
-                "headers": headers or {},
+                # ``Set-Cookie`` is never sent (``SENSITIVE_HEADERS``, sc-1470).
+                "headers": without_sensitive_headers(headers),
                 "body": _truncate(body),
                 "sent_at": datetime.now(timezone.utc).isoformat(),
                 "route": route,

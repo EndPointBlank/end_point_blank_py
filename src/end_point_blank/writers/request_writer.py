@@ -9,6 +9,7 @@ from ..base_url import resolve as resolve_base_url
 from ..commands.version_finder import VersionFinder
 from ..configuration import Configuration, LogMode
 from ..request_store import RequestStore
+from ..sensitive_headers import is_sensitive
 from .direct_writer import DirectWriter
 from .delayed_writer import DelayedWriter
 from ..commands._http import log_unsent
@@ -79,13 +80,20 @@ def _writer():
 
 
 def _extract_headers(environ: Dict[str, Any]) -> Dict[str, str]:
+    """The request's headers, less the credentials and cookies.
+
+    ``Authorization``, ``Proxy-Authorization`` and ``Cookie`` are never sent,
+    masking rule or not (``SENSITIVE_HEADERS``, sc-1470).
+    """
     headers: Dict[str, str] = {}
     for key, value in environ.items():
         if key.startswith("HTTP_"):
             name = key[5:].replace("_", "-").title()
-            headers[name] = value
         elif key in ("CONTENT_TYPE", "CONTENT_LENGTH"):
             name = key.replace("_", "-").title()
+        else:
+            continue
+        if not is_sensitive(name):
             headers[name] = value
     return headers
 

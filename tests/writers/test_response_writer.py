@@ -51,6 +51,14 @@ class TestThePayload:
     def test_carries_the_headers(self):
         assert write_and_capture(headers={"X-Custom": "yes"})["headers"] == {"X-Custom": "yes"}
 
+    def test_never_sends_set_cookie_in_any_letter_case(self):
+        # sc-1470: a session cookie the application sets is not the
+        # provider's request log's business.
+        headers = {"Content-Type": "text/plain", "Set-Cookie": "session=abc", "set-cookie": "b=c"}
+
+        assert write_and_capture(headers=headers)["headers"] == {"Content-Type": "text/plain"}
+        assert headers["Set-Cookie"] == "session=abc"
+
     def test_defaults_the_headers_to_an_empty_map(self):
         assert write_and_capture()["headers"] == {}
 

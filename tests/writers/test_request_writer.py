@@ -187,6 +187,50 @@ class TestTheHeaders:
         assert "Server-Protocol" not in write_and_capture()["headers"]
 
 
+    def test_never_sends_the_credentials_or_the_cookie(self):
+        # sc-1470: no masking rule is configured, and the caller's secret must
+        # still not reach the provider's request log.
+        RequestStore.set(
+            environ(
+                HTTP_AUTHORIZATION="Basic Y2xpZW50OnNlY3JldA==",
+                HTTP_PROXY_AUTHORIZATION="Bearer proxy-token",
+                HTTP_COOKIE="session=abc",
+                HTTP_X_REQUEST_ID="req-abc",
+            )
+        )
+
+        headers = write_and_capture()["headers"]
+
+        assert {name.lower() for name in headers} == {
+            "host",
+            "content-type",
+            "content-length",
+            "x-request-id",
+        }
+
+    def test_drops_the_credentials_before_the_mask_hook_sees_them(self, _reset):
+        seen = []
+
+        def hook(payload, _record_type):
+            seen.append(dict(payload["headers"]))
+            return payload
+
+        _reset.mask_hook = hook
+        RequestStore.set(environ(HTTP_AUTHORIZATION="Bearer token"))
+
+        write_and_capture()
+
+        assert "Authorization" not in seen[0]
+
+    def test_leaves_the_environ_alone(self):
+        env = environ(HTTP_AUTHORIZATION="Bearer token")
+        RequestStore.set(env)
+
+        write_and_capture()
+
+        assert env["HTTP_AUTHORIZATION"] == "Bearer token"
+
+
 class TestTheBody:
     def test_records_the_request_body(self):
         RequestStore.set(environ(b'{"name":"ada"}'))
@@ -244,11 +288,11 @@ class TestMasking:
 
     def test_configured_rules_are_applied_to_the_headers(self, _reset):
         _reset.masking_rules = [
-            {"target": "request_headers", "path": "$.Authorization", "replacement_value": "[redacted]"}
+            {"target": "request_headers", "path": "$['X-Api-Key']", "replacement_value": "[redacted]"}
         ]
-        RequestStore.set(environ(HTTP_AUTHORIZATION="Basic c2VjcmV0"))
+        RequestStore.set(environ(HTTP_X_API_KEY="c2VjcmV0"))
 
-        assert write_and_capture()["headers"]["Authorization"] == "[redacted]"
+        assert write_and_capture()["headers"]["X-Api-Key"] == "[redacted]"
 
 
 class TestWriterSelection:
