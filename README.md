@@ -503,6 +503,12 @@ literal `$`; an out-of-range or non-participating group expands to `""`).
 Masking never raises: an uncompilable regex, a blank/malformed/unsupported path, a non-JSON body,
 or a missing/`None` field all degrade to a no-op. Stacktraces and log messages are never masked.
 
+**Credential and cookie headers are never sent.** Before any rule runs, `RequestWriter` drops
+`Authorization`, `Proxy-Authorization` and `Cookie` from the request record, and `ResponseWriter`
+drops `Set-Cookie` from the response record, whatever their letter case. They are left out of the
+record, not masked: they are not in the payload the rules and hook receive. The list is
+`SENSITIVE_HEADERS` in `end_point_blank.sensitive_headers`.
+
 ## Management API
 
 `end_point_blank.management.ManagementClient` calls the EndPointBlank organization management
@@ -773,6 +779,7 @@ src/end_point_blank/
 ├── configuration.py         # Configuration singleton + LogMode
 ├── authorization.py         # Authorization header builder (Bearer only for providers)
 ├── masking.py               # Client-side masking engine (JSONPath subset + regex)
+├── sensitive_headers.py     # SENSITIVE_HEADERS: never sent in a request or response record
 ├── request_store.py         # Thread-local current-request store
 ├── unauthorized_error.py    # UnauthorizedError
 ├── configuration_error.py   # ConfigurationError (client_id/client_secret missing)
