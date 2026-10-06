@@ -179,16 +179,3 @@ class ReportInteractionMiddleware:
             )
             logger.debug("[middleware] <<< %s %s done (%.3fs)", method, path, time.monotonic() - t0)
             RequestStore.clear()
-
-
-def _extract_headers(environ: Dict[str, Any]) -> Dict[str, str]:
-    """Extracts HTTP headers from a WSGI environ dict."""
-    headers: Dict[str, str] = {}
-    for key, value in environ.items():
-        if key.startswith("HTTP_"):
-            header_name = key[5:].replace("_", "-").title()
-            headers[header_name] = value
-        elif key in ("CONTENT_TYPE", "CONTENT_LENGTH"):
-            header_name = key.replace("_", "-").title()
-            headers[header_name] = value
-    return headers

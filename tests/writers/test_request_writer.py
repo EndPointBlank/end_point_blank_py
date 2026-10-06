@@ -186,7 +186,6 @@ class TestTheHeaders:
 
         assert "Server-Protocol" not in write_and_capture()["headers"]
 
-
     def test_never_sends_the_credentials_or_the_cookie(self):
         # sc-1470: no masking rule is configured, and the caller's secret must
         # still not reach the provider's request log.

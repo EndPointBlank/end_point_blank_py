@@ -504,10 +504,10 @@ Masking never raises: an uncompilable regex, a blank/malformed/unsupported path,
 or a missing/`None` field all degrade to a no-op. Stacktraces and log messages are never masked.
 
 **Credential and cookie headers are never sent.** Before any rule runs, `RequestWriter` drops
-`Authorization`, `Proxy-Authorization` and `Cookie` from the request record, and
-`ResponseWriter` drops `Set-Cookie` from the response record, whatever their letter case. They
-are left out of the record, not masked, so no rule or `mask_hook` is needed for them and none can
-bring them back. The list is `SENSITIVE_HEADERS` in `end_point_blank.sensitive_headers`.
+`Authorization`, `Proxy-Authorization` and `Cookie` from the request record, and `ResponseWriter`
+drops `Set-Cookie` from the response record, whatever their letter case. They are left out of the
+record, not masked: they are not in the payload the rules and hook receive. The list is
+`SENSITIVE_HEADERS` in `end_point_blank.sensitive_headers`.
 
 ## Management API
 
