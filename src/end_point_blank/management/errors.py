@@ -74,7 +74,16 @@ class ErrorCode(str, Enum):
     CLIENT_ACCEPTED = "client_accepted"
     CLIENT_NOT_MANAGED = "client_not_managed"
     ALREADY_A_MEMBER = "already_a_member"
+    ALREADY_INVITED = "already_invited"
+    INVITE_ACCEPTED = "invite_accepted"
+    INVITE_NOT_OPEN = "invite_not_open"
+    INVITE_RATE_LIMITED = "invite_rate_limited"
+    NOT_AN_EMAIL_INVITE = "not_an_email_invite"
+    CLIENT_BEING_REMOVED = "client_being_removed"
+    CLIENT_NOT_REMOVABLE = "client_not_removable"
     RETURN_TO_NOT_REGISTERED = "return_to_not_registered"
+    RETURN_URL_NOT_REGISTERED = "return_url_not_registered"
+    OWNER_EMAIL_MISSING = "owner_email_missing"
     MANAGED_CLIENT_HAS_CREDENTIALS = "managed_client_has_credentials"
     API_PACKAGE_NOT_FOUND = "api_package_not_found"
     ENVIRONMENT_NOT_FOUND = "environment_not_found"
@@ -182,18 +191,20 @@ class NotFoundError(ManagementApiError):
 
 class ConflictError(ManagementApiError):
     """409: ``idempotency_request_in_progress``, ``intake_credential``,
-    ``grant_revoked_concurrently`` and any other 409."""
+    ``grant_revoked_concurrently``, ``already_invited`` and any other 409."""
 
 
 class IdempotencyReplayUnavailableError(ConflictError):
     """
     409 ``idempotency_replay_unavailable``: an earlier request with this
     ``Idempotency-Key`` already succeeded, and its answer held a secret shown
-    only once (a credential's create or rotate), so it cannot be replayed.
+    only once (a credential's create or rotate) or a single-use link (a
+    portal session), so it cannot be replayed.
 
     The first request did take effect. Do not retry it: read or list the
     resource (``location``, when the API sent it, names it) to see its current
-    state, and rotate the credential if its secret was lost.
+    state, and rotate the credential if its secret was lost; for a portal
+    session, create a new one with a new key.
     """
 
 
@@ -208,7 +219,8 @@ class RequestRefusedError(ManagementApiError):
 
 
 class RateLimitedError(ManagementApiError):
-    """429 ``rate_limited``. ``retry_after`` says how many seconds to wait."""
+    """429 ``rate_limited`` or ``invite_rate_limited``. ``retry_after`` says
+    how many seconds to wait."""
 
 
 class ServerError(ManagementApiError):

@@ -73,6 +73,28 @@ class TestTheRequestStore:
 
         assert RequestStore.get() is None
 
+    def test_a_request_arrives_with_no_caller_from_before(self):
+        # sc-1571: an environ that still carries an earlier authorization must
+        # not lend that caller to this request.
+        seen = []
+
+        def view(_request):
+            seen.append((
+                RequestStore.get_source_application_environment_id(),
+                RequestStore.get_source_organization_id(),
+                RequestStore.get_deprecation(),
+            ))
+            return HttpResponse("ok")
+
+        request = post_request()
+        request.environ["end_point_blank.source_application_environment_id"] = "env-stale"
+        request.environ["end_point_blank.source_organization_id"] = "org-stale"
+        request.environ["end_point_blank.deprecation"] = {"deprecated_at": "2026-01-01T00:00:00Z"}
+
+        ReportInteractionMiddleware(view)(request)
+
+        assert seen == [(None, None, None)]
+
 
 class TestTheRequestBody:
     def test_the_view_can_still_read_the_body_after_it_has_been_recorded(self):

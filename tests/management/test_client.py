@@ -45,6 +45,7 @@ from end_point_blank.management import (
     PackageEndpointAdded,
     Page,
     PlanLimitError,
+    PortalSession,
     RateLimitedError,
     RequestRefusedError,
     ServerError,
@@ -294,6 +295,17 @@ CASES = [
      201, {"data": {"id": "c1", "status": "pending", "invite_code": "INV"}}, Client),
     ("create_managed_client", lambda m: m.create_managed_client("Initech"), "POST", "/clients", {},
      {"name": "Initech", "managed": True}, 201, {"data": {"id": "c1", "managed": True, "status": "accepted"}}, Client),
+    ("create_managed_client with owner_email",
+     lambda m: m.create_managed_client("Initech", owner_email="owner@initech.test"), "POST", "/clients", {},
+     {"name": "Initech", "managed": True, "owner_email": "owner@initech.test"}, 201,
+     {"data": {"id": "c1", "managed": True, "owner_email": "owner@initech.test"}}, Client),
+    ("create_client managed with owner_email",
+     lambda m: m.create_client("Initech", managed=True, owner_email="owner@initech.test"), "POST", "/clients", {},
+     {"name": "Initech", "managed": True, "owner_email": "owner@initech.test"}, 201,
+     {"data": {"id": "c1", "managed": True}}, Client),
+    ("update_client", lambda m: m.update_client("c1", owner_email="new-owner@initech.test"), "PATCH", "/clients/c1",
+     {}, {"owner_email": "new-owner@initech.test"}, 200, {"data": {"id": "c1", "owner_email": "new-owner@initech.test"}},
+     Client),
     ("delete_client", lambda m: m.delete_client("c1"), "DELETE", "/clients/c1", {}, None, 200, DELETED, Deleted),
     ("send_claim_invite", lambda m: m.send_claim_invite("c1", "owner@initech.test"), "POST",
      "/clients/c1/claim_invites", {}, {"email": "owner@initech.test"}, 201,
@@ -303,6 +315,13 @@ CASES = [
      "POST", "/clients/c1/claim_invites", {},
      {"email": "owner@initech.test", "return_to": "https://app.example.test/welcome"}, 201,
      {"data": {"client_id": "c1", "email": "owner@initech.test"}}, ClaimInvite),
+    ("create_portal_session", lambda m: m.create_portal_session("c1"), "POST", "/clients/c1/portal_sessions", {},
+     None, 201, {"data": {"client_id": "c1", "url": "https://portal.test/managed/sessions/abc",
+                          "expires_at": "2026-10-07T12:01:00Z", "return_url": None}}, PortalSession),
+    ("create_portal_session with return_url",
+     lambda m: m.create_portal_session("c1", return_url="https://provider.test/portal/credential/claimed"),
+     "POST", "/clients/c1/portal_sessions", {}, {"return_url": "https://provider.test/portal/credential/claimed"},
+     201, {"data": {"client_id": "c1", "url": "https://portal.test/managed/sessions/abc"}}, PortalSession),
     # package assignments
     ("list_client_packages", lambda m: m.list_client_packages("c1"), "GET", "/clients/c1/packages", {}, None, 200,
      PAGE, Page),
@@ -543,6 +562,84 @@ class TestPagination:
         assert query_of(request(rsps)) == {"limit": str(limit)}
 
 
+# --- managed clients' owners (sc-1567, sc-1574) -----------------------------
+
+
+class TestManagedClientOwners:
+    def test_the_client_carries_its_owner_email(self, mgmt, rsps):
+        rsps.patch(API + "/clients/c1", json={"data": {"id": "c1", "managed": True,
+                                                       "owner_email": "new-owner@initech.test"}})
+        client = mgmt.update_client("c1", owner_email="new-owner@initech.test")
+        assert client.owner_email == "new-owner@initech.test"
+
+    def test_update_client_is_never_retried_after_a_5xx(self, mgmt, rsps, sleeps):
+        rsps.patch(API + "/clients/c1", json=error_body("internal_server_error"), status=500)
+        with pytest.raises(ServerError):
+            mgmt.update_client("c1", owner_email="owner@initech.test")
+        assert len(rsps.calls) == 1 and sleeps == []
+        assert "Idempotency-Key" not in request(rsps).headers
+
+    def test_update_client_is_not_retried_after_a_lost_connection(self, mgmt, rsps, sleeps):
+        rsps.patch(API + "/clients/c1", body=requests.ConnectionError("reset"))
+        with pytest.raises(ManagementConnectionError):
+            mgmt.update_client("c1", owner_email="owner@initech.test")
+        assert len(rsps.calls) == 1 and sleeps == []
+
+    def test_create_portal_session_answers_the_session(self, mgmt, rsps):
+        data = {"client_id": "c1", "url": "https://portal.test/managed/sessions/abc",
+                "expires_at": "2026-10-07T12:01:00Z", "return_url": None}
+        rsps.post(API + "/clients/c1/portal_sessions", json={"data": data}, status=201)
+        session = mgmt.create_portal_session("c1")
+        assert (session.client_id, session.url, session.expires_at, session.return_url) == (
+            "c1", "https://portal.test/managed/sessions/abc", "2026-10-07T12:01:00Z", None)
+        assert session.raw == data
+        # The link signs its holder in until it expires.
+        assert "sessions/abc" not in repr(session)
+        req = request(rsps)
+        assert req.body is None and "Content-Type" not in req.headers
+        assert uuid.UUID(req.headers["Idempotency-Key"]).version == 4
+
+    def test_create_portal_session_sends_no_body_for_a_none_return_url(self, mgmt, rsps):
+        rsps.post(API + "/clients/c1/portal_sessions", json={"data": {"client_id": "c1"}}, status=201)
+        mgmt.create_portal_session("c1", return_url=None)
+        assert request(rsps).body is None
+
+    def test_create_portal_session_sends_a_new_key_on_every_call(self, mgmt, rsps):
+        # The answer is never replayed, so every click needs a key of its own.
+        for _ in range(2):
+            rsps.post(API + "/clients/c1/portal_sessions", json={"data": {"client_id": "c1"}}, status=201)
+        mgmt.create_portal_session("c1")
+        mgmt.create_portal_session("c1")
+        first, second = (c.request.headers["Idempotency-Key"] for c in rsps.calls)
+        assert first != second
+
+    def test_create_portal_session_sends_the_callers_key(self, mgmt, rsps):
+        rsps.post(API + "/clients/c1/portal_sessions", json={"data": {"client_id": "c1"}}, status=201)
+        mgmt.create_portal_session("c1", idempotency_key="click-1")
+        assert request(rsps).headers["Idempotency-Key"] == "click-1"
+
+    @pytest.mark.parametrize("code", [
+        "client_not_managed", "client_being_removed", "owner_email_missing", "return_url_not_registered",
+    ])
+    def test_create_portal_session_answers_the_refusal(self, mgmt, rsps, code):
+        rsps.post(API + "/clients/c1/portal_sessions", json=error_body(code), status=422)
+        with pytest.raises(RequestRefusedError) as info:
+            mgmt.create_portal_session("c1", return_url="")
+        assert info.value.code == code and info.value.status == 422
+        assert body_of(request(rsps)) == {"return_url": ""}
+
+    def test_create_portal_session_says_to_create_a_new_session_when_a_key_is_reused(self, mgmt, rsps, sleeps):
+        rsps.post(API + "/clients/c1/portal_sessions", status=409,
+                  json=error_body("idempotency_replay_unavailable", "server text."))
+        with pytest.raises(IdempotencyReplayUnavailableError) as info:
+            mgmt.create_portal_session("c1", idempotency_key="k1")
+        error = info.value
+        assert error.code == ErrorCode.IDEMPOTENCY_REPLAY_UNAVAILABLE and error.status == 409
+        assert "was not retried" in error.message
+        assert "portal session, create a new one with a new key" in error.message
+        assert len(rsps.calls) == 1 and sleeps == []
+
+
 # --- idempotency and retries ------------------------------------------------
 
 
@@ -606,6 +703,7 @@ class TestIdempotency:
         assert error.code == "idempotency_replay_unavailable" and error.status == 409
         assert error.location == "/api/v1/credentials/cr1"
         assert "read or list the resource" in error.message
+        assert "rotate the credential if its secret was lost" in error.message
         assert len(rsps.calls) == 1 and sleeps == []
 
 
@@ -826,24 +924,49 @@ class TestErrors:
             assert KEY not in text
 
 
-# The codes app_portal's ErrorCodes module documents (app_portal#432).
+# The codes app_portal's ErrorCodes module documents, with their HTTP statuses
+# (app_portal#432, #463); the same list as the Elixir SDK's Error.known_codes/0.
 DOCUMENTED_CODES = {
-    "missing_key", "invalid_key", "runtime_credential_refused", "insufficient_scope", "audit_unavailable",
-    "rate_limited", "plan_limit", "validation_failed", "not_found", "invalid_pagination", "invalid_filter",
-    "invalid_idempotency_key", "idempotency_key_reused", "idempotency_request_in_progress",
-    "idempotency_replay_unavailable", "bad_request", "internal_server_error", "has_dependents", "protected",
-    "invalid_environment_base_urls", "api_package_assigned", "intake_sync_failed", "delete_refused",
-    "intake_credential", "intake_rejected", "intake_unavailable", "invalid_contacts", "invalid_packages",
-    "invalid_grants", "invalid_managed", "client_not_accepted", "client_accepted", "client_not_managed",
-    "already_a_member", "return_to_not_registered", "managed_client_has_credentials", "api_package_not_found", "environment_not_found",
-    "already_assigned", "nothing_published_in_environment", "application_not_found", "endpoint_not_found",
-    "environment_not_in_application", "already_granted", "grant_revoked_concurrently",
+    "missing_key": 401, "invalid_key": 401, "runtime_credential_refused": 401, "insufficient_scope": 403,
+    "audit_unavailable": 503, "rate_limited": 429, "plan_limit": 402, "validation_failed": 422,
+    "not_found": 404, "invalid_pagination": 400, "invalid_filter": 422, "invalid_idempotency_key": 400,
+    "idempotency_key_reused": 422, "idempotency_request_in_progress": 409,
+    "idempotency_replay_unavailable": 409, "bad_request": 400, "internal_server_error": 500,
+    "has_dependents": 422, "protected": 422, "invalid_environment_base_urls": 422, "api_package_assigned": 422,
+    "intake_sync_failed": 422, "delete_refused": 422, "intake_credential": 409, "intake_rejected": 422,
+    "intake_unavailable": 503, "invalid_contacts": 422, "invalid_packages": 422, "invalid_grants": 422,
+    "invalid_managed": 422, "client_not_accepted": 422, "client_accepted": 422, "client_not_managed": 422,
+    "already_a_member": 422, "already_invited": 409, "invite_accepted": 422, "invite_not_open": 422,
+    "invite_rate_limited": 429, "not_an_email_invite": 422, "client_being_removed": 422,
+    "client_not_removable": 422, "managed_client_has_credentials": 422, "api_package_not_found": 422,
+    "environment_not_found": 422, "already_assigned": 422, "nothing_published_in_environment": 422,
+    "application_not_found": 422, "endpoint_not_found": 422, "environment_not_in_application": 422,
+    "already_granted": 422, "grant_revoked_concurrently": 409, "return_to_not_registered": 422,
+    "return_url_not_registered": 422, "owner_email_missing": 422,
+}
+
+# The class each documented status is raised as (or a subclass of it).
+# validation_failed, the one 422 that is not a refusal, has a class of its own.
+_CLASS_BY_STATUS = {
+    400: BadRequestError, 401: AuthenticationError, 402: PlanLimitError, 403: InsufficientScopeError,
+    404: NotFoundError, 409: ConflictError, 422: RequestRefusedError, 429: RateLimitedError,
+    500: ServerError, 503: ServiceUnavailableError,
 }
 
 
 def test_error_code_lists_exactly_the_documented_codes():
     sdk_own = {"connection_error", "request_error", "invalid_response", "assignment_derives_nothing"}
-    assert {c.value for c in ErrorCode} - sdk_own == DOCUMENTED_CODES
+    assert {c.value for c in ErrorCode} - sdk_own == set(DOCUMENTED_CODES)
+
+
+@pytest.mark.parametrize("code,status", sorted(DOCUMENTED_CODES.items()))
+def test_each_documented_code_is_raised_as_a_class_of_its_status(rsps, code, status):
+    client = ManagementClient(KEY, base_url=BASE, max_retries=0)
+    rsps.get(API + "/organization", json=error_body(code), status=status)
+    expected = ValidationFailedError if code == "validation_failed" else _CLASS_BY_STATUS[status]
+    with pytest.raises(expected) as info:
+        client.get_organization()
+    assert info.value.code == code and info.value.status == status
 
 
 class TestLogging:

@@ -39,7 +39,7 @@ from end_point_blank.request_store import RequestStore
 from end_point_blank.unauthorized_error import UnauthorizedError
 from end_point_blank.writers.exception_writer import ExceptionWriter
 from end_point_blank.writers.log_writer import LogWriter
-from tests.intake_authorize import SOURCE_ENVIRONMENT_ID, granted
+from tests.intake_authorize import SOURCE_ENVIRONMENT_ID, SOURCE_ORGANIZATION_ID, granted
 
 DEPRECATION = {"deprecated_at": "2026-01-01T00:00:00Z", "sunset_at": "2026-11-11T11:11:11Z"}
 EXPECTED_DEPRECATION = "@1767225600"
@@ -295,6 +295,7 @@ class TestRequestStoreContract:
 
         assert RequestStore.get_deprecation() is None
         assert RequestStore.get_source_application_environment_id() is None
+        assert RequestStore.get_source_organization_id() is None
 
 
 @pytest.mark.parametrize("integration", INTEGRATIONS)
@@ -442,6 +443,20 @@ class TestTheCallerIsNamedOnWhatIsReported:
         assert reported.authorize_calls == ["/api/authorize"], "the second request is a cache hit"
         assert reported.callers_on("response") == [SOURCE_ENVIRONMENT_ID]
         assert reported.callers_on("log") == [SOURCE_ENVIRONMENT_ID]
+
+    def test_the_view_can_read_the_calling_organization(self, integration, reported):
+        # sc-1571: kept beside the source environment id, on a miss and a hit.
+        seen = []
+
+        def view():
+            seen.append(RequestStore.get_source_organization_id())
+
+        integration.serve_authorized(view)
+        integration.serve_authorized(view)
+
+        assert reported.authorize_calls == ["/api/authorize"], "the second request is a cache hit"
+        assert seen == [SOURCE_ORGANIZATION_ID, SOURCE_ORGANIZATION_ID]
+        assert RequestStore.get_source_organization_id() is None
 
     def test_the_caller_does_not_outlive_the_request(self, integration, reported):
         # Servers reuse threads. A report written after the request -- a

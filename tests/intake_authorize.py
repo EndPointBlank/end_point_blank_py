@@ -8,7 +8,9 @@ renders ``:show, accesses: [access_map]`` with status 201, and
 ``accesses`` is the name of the render assign, never a key on the wire. Each
 entry carries exactly four keys, which intake's
 ``authorization_controller_test.exs`` ("POST /api/authorize — authorized") pins
-by listing them. ``deprecation`` is added only when the version being called is
+by listing them, plus ``source_organization_id``, the calling organization's
+EndPointBlank id, since sc-1571 (``ABSENT`` answers as an intake older than
+that, which does not send the key at all). ``deprecation`` is added only when the version being called is
 deprecated. The values below follow intake's ``authorization_json_test.exs``.
 
 There is one copy on purpose. A stub that answers a shape of its own agrees with
@@ -22,23 +24,24 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 SOURCE_ENVIRONMENT_ID = "0b6f7c1e-3a52-4d8e-9f10-5c2a7e4b9d31"
+SOURCE_ORGANIZATION_ID = "7d2e9a40-1c6b-4f3e-8a95-3b0c6e2f1d84"
+ABSENT = object()
 
 
 def granted(
     source_application_environment_id: Optional[str] = SOURCE_ENVIRONMENT_ID,
     deprecation: Optional[Dict[str, Any]] = None,
+    source_organization_id: Any = SOURCE_ORGANIZATION_ID,
 ) -> Dict[str, Any]:
-    body: Dict[str, Any] = {
-        "authorized": True,
-        "data": [
-            {
-                "id": "gen-1",
-                "source_application_environment_id": source_application_environment_id,
-                "target_application_environment_id": "tgt-env",
-                "inserted_at": "2026-01-01T00:00:00Z",
-            }
-        ],
+    access: Dict[str, Any] = {
+        "id": "gen-1",
+        "source_application_environment_id": source_application_environment_id,
+        "target_application_environment_id": "tgt-env",
+        "inserted_at": "2026-01-01T00:00:00Z",
     }
+    if source_organization_id is not ABSENT:
+        access["source_organization_id"] = source_organization_id
+    body: Dict[str, Any] = {"authorized": True, "data": [access]}
     if deprecation is not None:
         body["deprecation"] = deprecation
     return body

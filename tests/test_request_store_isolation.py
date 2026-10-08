@@ -28,6 +28,7 @@ class TestSequentialRequestsOnTheSameThread:
     def test_a_later_request_sees_nothing_from_an_earlier_one(self):
         RequestStore.set({})
         RequestStore.set_source_application_environment_id("env-first")
+        RequestStore.set_source_organization_id("org-first")
         RequestStore.set_deprecation({"deprecated_at": "2026-01-01T00:00:00Z"})
 
         # The next request installs its own environ. Deliberately no clear() —
@@ -35,7 +36,25 @@ class TestSequentialRequestsOnTheSameThread:
         RequestStore.set({})
 
         assert RequestStore.get_source_application_environment_id() is None
+        assert RequestStore.get_source_organization_id() is None
         assert RequestStore.get_deprecation() is None
+
+    def test_an_environ_handed_in_again_arrives_empty_of_its_caller(self):
+        # The environ is per request by construction, but a host that
+        # re-dispatches one (or a harness that reuses it) would otherwise
+        # carry the earlier authorization into this request (sc-1571).
+        environ = {}
+        RequestStore.set(environ)
+        RequestStore.set_source_application_environment_id("env-stale")
+        RequestStore.set_source_organization_id("org-stale")
+        RequestStore.set_deprecation({"deprecated_at": "2026-01-01T00:00:00Z"})
+
+        RequestStore.set(environ)
+
+        assert RequestStore.get_source_application_environment_id() is None
+        assert RequestStore.get_source_organization_id() is None
+        assert RequestStore.get_deprecation() is None
+        assert RequestStore.get_uuid()
 
     def test_a_stranded_value_cannot_be_read_by_the_next_request(self):
         # Simulate the gap the thread-local had: something set a value outside
@@ -106,14 +125,17 @@ class TestOutsideARequest:
         RequestStore.clear()
 
         RequestStore.set_source_application_environment_id("env-123")
+        RequestStore.set_source_organization_id("org-123")
         RequestStore.set_deprecation({"deprecated_at": "2026-01-01T00:00:00Z"})
 
         assert RequestStore.get_source_application_environment_id() is None
+        assert RequestStore.get_source_organization_id() is None
         assert RequestStore.get_deprecation() is None
 
     def test_clear_drops_everything(self):
         RequestStore.set({})
         RequestStore.set_source_application_environment_id("env-123")
+        RequestStore.set_source_organization_id("org-123")
         RequestStore.set_deprecation({"deprecated_at": "2026-01-01T00:00:00Z"})
 
         RequestStore.clear()
@@ -121,4 +143,5 @@ class TestOutsideARequest:
         assert RequestStore.get() is None
         assert RequestStore.get_uuid() is None
         assert RequestStore.get_source_application_environment_id() is None
+        assert RequestStore.get_source_organization_id() is None
         assert RequestStore.get_deprecation() is None

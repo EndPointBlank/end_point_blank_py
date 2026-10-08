@@ -386,6 +386,12 @@ result, so a cached request is named too. A `201` that carries no id still reach
 the SDK logs an error, once per uncached authorization, instead of recording the request as if
 it had no caller.
 
+The calling organization's EndPointBlank id comes with it: `RequestStore.get_source_organization_id()`
+returns `data[0].source_organization_id`, cached beside the environment id, so a cached request has
+it too. It is `None`, without a log line, when EndPointBlank is older than that field or the
+organization has no id there. Both ids are cleared before each authorization and when a request
+arrives, so a refused or failed authorization never names an earlier caller.
+
 ### Error, request/response, and log reporting
 
 `ReportInteractionMiddleware` (WSGI) or its Django equivalent automatically:
@@ -605,7 +611,9 @@ claim it. `for_managed_client(id)` gives the same application, environment and c
 sent under `/api/v1/clients/<id>/...`:
 
 ```python
-managed = mgmt.create_managed_client("Initech")
+# owner_email (optional) names the person at your customer who will own it;
+# change it later with mgmt.update_client(managed.id, owner_email=...).
+managed = mgmt.create_managed_client("Initech", owner_email="owner@initech.example")
 initech = mgmt.for_managed_client(managed.id)
 
 env = initech.create_environment("production-eu", "eu.initech.example")
@@ -616,12 +624,27 @@ credential = initech.create_credential(app_env.id)        # hand this to your cu
 mgmt.assign_package(managed.id, api_package_id=package.id, environment_id=production.id)
 mgmt.send_claim_invite(managed.id, "owner@initech.example",
                        return_to="https://app.example.com/welcome")   # optional
+
+# Until they claim it, send its owner into its EndPointBlank portal from your
+# app: mint a link when they click and redirect their browser to it. The link
+# works once and expires after 60 seconds, so never render it into a page, and
+# mint a new one (with a new Idempotency-Key, the default) on every click.
+session = mgmt.create_portal_session(managed.id,
+                                     return_url="https://app.example.com/welcome")  # optional
+redirect(session.url)
 ```
 
 `return_to` is optional: once the customer claims the account, EndPointBlank sends their
 browser there. It must equal, byte for byte, a claim return URL your organization registered in
 EndPointBlank; anything else is refused with 422 `return_to_not_registered`
 (`RequestRefusedError`). Without it, nothing is sent and the customer stays in EndPointBlank.
+
+`create_portal_session` answers a `PortalSession` (`client_id`, `url`, `expires_at`,
+`return_url`; `url` is left out of its `repr`). `return_url` must likewise be one of your claim
+return URLs. It is refused with `not_found` for a client that is not yours, and with 422
+`client_not_managed`, `client_being_removed`, `owner_email_missing` (set one with
+`update_client`) or `return_url_not_registered`. The answer is never replayed: a reused
+Idempotency-Key raises `IdempotencyReplayUnavailableError`.
 
 Once the customer claims it, the `initech` calls answer `not_found`. A managed client that still
 holds credentials can't be deleted: revoke them first.

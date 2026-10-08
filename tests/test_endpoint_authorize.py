@@ -25,7 +25,7 @@ from end_point_blank.commands.endpoint_authorize import EndpointAuthorize, _Cach
 from end_point_blank.configuration import Configuration
 from end_point_blank.request_store import RequestStore
 from end_point_blank.tokens.access_tokens import AccessTokens
-from tests.intake_authorize import SOURCE_ENVIRONMENT_ID, granted
+from tests.intake_authorize import ABSENT, SOURCE_ENVIRONMENT_ID, SOURCE_ORGANIZATION_ID, granted
 
 GENERATOR = "end_point_blank.commands.generate_access_token.GenerateAccessToken.token"
 
@@ -361,6 +361,101 @@ class TestTheCallersSourceEnvironment:
 
         assert RequestStore.get_source_application_environment_id() is None
         assert "source_application_environment_id" not in caplog.text
+
+
+class TestTheCallingOrganization:
+    """sc-1571: intake names the calling organization by its EndPointBlank id,
+    kept beside the source environment id."""
+
+    def test_is_recorded_beside_the_source_environment_id(self):
+        with patch.object(ea, "post", return_value=response(payload=granted(source_organization_id="org-42"))):
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert RequestStore.get_source_organization_id() == "org-42"
+        assert RequestStore.get_source_application_environment_id() == SOURCE_ENVIRONMENT_ID
+
+    def test_is_none_quietly_when_intake_is_older_than_the_field(self, caplog):
+        # An older intake is not a broken contract, so nothing is logged: the
+        # error log is kept for the env id, whose absence is one.
+        with caplog.at_level(logging.DEBUG, logger=ea.__name__):
+            with patch.object(ea, "post", return_value=response(payload=granted(source_organization_id=ABSENT))):
+                result = EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert result.status_code == 201
+        assert RequestStore.get_source_organization_id() is None
+        assert RequestStore.get_source_application_environment_id() == SOURCE_ENVIRONMENT_ID
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    @pytest.mark.parametrize("value", [None, "", 42])
+    def test_is_none_when_intake_answers_no_usable_id(self, value):
+        # null is what intake sends for an organization with no id there.
+        with patch.object(ea, "post", return_value=response(payload=granted(source_organization_id=value))):
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert RequestStore.get_source_organization_id() is None
+
+    def test_a_cache_hit_records_it_too(self):
+        # Cached per client and route like the deprecation, so an organization
+        # carried only on the miss would be there on roughly one request in N.
+        with patch.object(ea, "post", return_value=response()):
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        RequestStore.set({})
+
+        with patch.object(ea, "post") as post:
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+            post.assert_not_called()
+
+        assert RequestStore.get_source_organization_id() == SOURCE_ORGANIZATION_ID
+
+    def test_an_entry_cached_before_the_organization_was_still_authorizes(self):
+        # Up to 0.13.x the grant was (env id, deprecation). Such an entry
+        # answers with its env id and deprecation, and no organization, rather
+        # than as a malformed hit.
+        block = {"deprecated_at": "2026-01-01T00:00:00Z"}
+        key = f"epb_auth:Basic Y2xpZW50:/students:GET:{Configuration().app_name}:1"
+        AuthenticationCache().store(key, ("env-0.13", block))
+        RequestStore.set_source_organization_id("org-stale")
+
+        with patch.object(ea, "post") as post:
+            result = EndpointAuthorize.authorize(environ(), "/students", "1")
+            post.assert_not_called()
+
+        assert result.status_code == 201
+        assert RequestStore.get_source_application_environment_id() == "env-0.13"
+        assert RequestStore.get_source_organization_id() is None
+        assert RequestStore.get_deprecation() == block
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            lambda: None,
+            lambda: response(403, payload={"authorized": False}),
+            lambda: response(503, payload={"error": "unavailable"}),
+        ],
+        ids=["unreachable", "refused", "unavailable"],
+    )
+    def test_is_not_recorded_when_the_authorization_fails(self, outcome):
+        # A value left by an earlier authorization in this request must not
+        # survive a failed one and name the wrong caller.
+        RequestStore.set_source_application_environment_id("env-stale")
+        RequestStore.set_source_organization_id("org-stale")
+        RequestStore.set_deprecation({"deprecated_at": "2026-01-01T00:00:00Z"})
+
+        with patch.object(ea, "post", return_value=outcome()):
+            EndpointAuthorize.authorize(environ(), "/students", "1")
+
+        assert RequestStore.get_source_application_environment_id() is None
+        assert RequestStore.get_source_organization_id() is None
+        assert RequestStore.get_deprecation() is None
+
+    def test_is_not_recorded_when_intake_raises(self):
+        RequestStore.set_source_organization_id("org-stale")
+
+        with patch.object(ea, "post", side_effect=RuntimeError("boom")):
+            assert EndpointAuthorize.authorize(environ(), "/students", "1") is None
+
+        assert RequestStore.get_source_organization_id() is None
 
 
 class TestTheCredentialItPresents:
