@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.14.0
+
+### Added
+
+- **Managed clients carry an `owner_email` (sc-1567).** `ManagementClient.create_managed_client`
+  and `create_client(managed=True)` take an optional `owner_email`, the person at your customer
+  who will own the managed client, and the new `update_client(client_id, owner_email=...)`
+  (`PATCH /api/v1/clients/:id`) changes it. Like every PATCH it carries no Idempotency-Key and is
+  never retried after a 5xx or a lost connection. `Client` has an `owner_email` attribute.
+- **The calling organization's id is kept from `/authorize` (sc-1571).**
+  `RequestStore.get_source_organization_id()` returns `data[0].source_organization_id`, the
+  caller's EndPointBlank organization id, cached with the source environment id so a cache hit has
+  it too. `None`, without a log line, when intake is older than the field or the organization has
+  no id. That `None` is cached like the id would be: after intake starts sending the field, a
+  cached client and route keeps answering `None` until its entry expires (`cache_ttl`, 300 s by
+  default). A cache entry of the earlier `(environment id, deprecation)` shape still authorizes,
+  with no organization.
+- **`ManagementClient.create_portal_session` signs a managed client's owner in to its
+  EndPointBlank portal (sc-1574).** It calls `POST /api/v1/clients/:client_id/portal_sessions`
+  and answers a `PortalSession` (`client_id`, `url`, `expires_at`, `return_url`): a single-use
+  link that expires 60 seconds after it is minted, so mint it when the user clicks and redirect
+  their browser to it. `url` is left out of its `repr`. `return_url` (optional) must equal one of
+  your organization's claim return URLs; without it the request has no body. Refused with 404
+  for a client that is not yours, and 422 (`client_not_managed`, `client_being_removed`,
+  `owner_email_missing`, `return_url_not_registered`) for one that is not an unclaimed managed
+  client open to claims with an owner email. The answer is never replayed: each call sends a new
+  Idempotency-Key, and a reused one raises `IdempotencyReplayUnavailableError`, whose message now
+  also says to create a new portal session with a new key.
+- `ErrorCode` lists the API codes it was missing: `ALREADY_INVITED`, `INVITE_ACCEPTED`,
+  `INVITE_NOT_OPEN`, `INVITE_RATE_LIMITED`, `NOT_AN_EMAIL_INVITE`, `CLIENT_BEING_REMOVED`,
+  `CLIENT_NOT_REMOVABLE`, `RETURN_URL_NOT_REGISTERED` and `OWNER_EMAIL_MISSING`.
+
+### Fixed
+
+- **A failed authorization no longer leaves an earlier caller in the `RequestStore`.**
+  `EndpointAuthorize.authorize` clears the source environment id, organization id and
+  deprecation before it asks, and `RequestStore.set` (which both middlewares call when a request
+  arrives) drops them from the arriving environ, so a refused or failed authorization cannot name
+  a previous caller.
+
 ## 0.13.1
 
 ### Security

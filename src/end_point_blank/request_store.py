@@ -8,7 +8,12 @@ _local = threading.local()
 # collide with anything the server or another middleware puts there.
 _UUID_KEY = "end_point_blank.uuid"
 _SOURCE_ENV_ID_KEY = "end_point_blank.source_application_environment_id"
+_SOURCE_ORGANIZATION_ID_KEY = "end_point_blank.source_organization_id"
 _DEPRECATION_KEY = "end_point_blank.deprecation"
+
+# What an authorization says about the caller. Dropped from an environ as it
+# arrives (see :meth:`RequestStore.set`).
+_CALLER_KEYS = (_SOURCE_ENV_ID_KEY, _SOURCE_ORGANIZATION_ID_KEY, _DEPRECATION_KEY)
 
 
 class RequestStore:
@@ -41,6 +46,11 @@ class RequestStore:
     def set(environ: dict) -> None:
         _local.environ = environ
         if environ is not None:
+            # Start from nothing: an environ handed in again (a host that
+            # re-dispatches it, a test harness that reuses one) must not lend
+            # the caller an earlier authorization named to this request.
+            for key in _CALLER_KEYS:
+                environ.pop(key, None)
             environ[_UUID_KEY] = environ.get("HTTP_X_REQUEST_ID") or str(_uuid_mod.uuid4())
 
     @staticmethod
@@ -60,6 +70,18 @@ class RequestStore:
     @staticmethod
     def get_source_application_environment_id() -> Optional[str]:
         return RequestStore._fetch(_SOURCE_ENV_ID_KEY)
+
+    @staticmethod
+    def set_source_organization_id(id: Optional[str]) -> None:
+        """The calling organization's EndPointBlank id, from intake's
+        ``/authorize`` answer (``data[0].source_organization_id``, sc-1571)."""
+        RequestStore._put(_SOURCE_ORGANIZATION_ID_KEY, id)
+
+    @staticmethod
+    def get_source_organization_id() -> Optional[str]:
+        """``None`` when intake is older than that field or the organization
+        has no id there."""
+        return RequestStore._fetch(_SOURCE_ORGANIZATION_ID_KEY)
 
     @staticmethod
     def set_deprecation(deprecation: Optional[dict]) -> None:

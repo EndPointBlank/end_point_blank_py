@@ -24,7 +24,13 @@ class _Grant(NamedTuple):
     """
 
     source_application_environment_id: Optional[str]
+    source_organization_id: Optional[str]
     deprecation: Optional[dict]
+
+
+# Recorded before each authorization, so one that is refused or fails names
+# no caller rather than whoever was authorized before it.
+_NO_GRANT = _Grant(None, None, None)
 
 
 class _CachedResponse:
@@ -40,8 +46,8 @@ class EndpointAuthorize:
     Sends the request path, HTTP method, client authorization header, application name,
     API version, source IP, and target hostname to the configured ``authorize_url``.
 
-    A grant records the caller's source application environment and any deprecation
-    block on the current request (see :class:`~end_point_blank.request_store.RequestStore`).
+    A grant records the caller's source application environment, its organization and
+    any deprecation block on the current request (see :class:`~end_point_blank.request_store.RequestStore`).
 
     Successful authorization results are cached for ``Configuration().cache_ttl`` seconds
     (default 300 s) keyed on (client_auth, path, method) to avoid a live intake call on
@@ -56,6 +62,8 @@ class EndpointAuthorize:
         path: str,
         version: Optional[str],
     ) -> Optional[req_lib.Response]:
+        _record(_NO_GRANT)
+
         config = Configuration()
         client_auth = environ.get("HTTP_AUTHORIZATION", "")
         method = environ.get("REQUEST_METHOD", "")
@@ -74,13 +82,13 @@ class EndpointAuthorize:
         cached = cache.retrieve(cache_key)
         if cached is not None:
             logger.debug("Authorization cache hit for %s %s", method, path)
-            # The cached value is the grant -- the caller's source environment
-            # and the deprecation block -- not a truthy flag. Authorization is
+            # The cached value is the grant -- the caller's source environment,
+            # its organization and the deprecation block -- not a truthy flag. Authorization is
             # cached per client+route, so caching a flag would name the caller
             # and send the Deprecation and Sunset headers on cache misses alone —
             # roughly one request in N, which reads as a flaky feature rather
             # than a missing one.
-            _record(cached)
+            _record(_cached_grant(cached))
             return _CachedResponse(201)
 
         body: Dict[str, Any] = {
@@ -124,7 +132,21 @@ def _record(grant: _Grant) -> None:
     source environment on its response, log and error rows, and the middleware
     turns the deprecation block into headers."""
     RequestStore.set_source_application_environment_id(grant.source_application_environment_id)
+    RequestStore.set_source_organization_id(grant.source_organization_id)
     RequestStore.set_deprecation(grant.deprecation)
+
+
+def _cached_grant(cached: Any) -> _Grant:
+    """A cache entry as a grant. Up to 0.13.x a grant was
+    ``(source environment id, deprecation)``, with no organization. The cache
+    lives in this process, so an upgrade normally starts it empty; an entry of
+    that shape still authorizes, naming no organization, rather than failing
+    as a malformed hit. Anything else names no caller at all."""
+    if isinstance(cached, _Grant):
+        return cached
+    if isinstance(cached, tuple) and len(cached) == 2:
+        return _Grant(cached[0], None, cached[1])
+    return _NO_GRANT
 
 
 def _grant_from(response) -> _Grant:
@@ -135,6 +157,7 @@ def _grant_from(response) -> _Grant:
 
     return _Grant(
         source_application_environment_id=_source_environment_id_from(payload, response),
+        source_organization_id=_source_organization_id_from(payload),
         deprecation=_deprecation_from(payload),
     )
 
@@ -168,6 +191,17 @@ def _source_environment_id_from(payload, response) -> Optional[str]:
         response.text,
     )
     return None
+
+
+def _source_organization_id_from(payload) -> Optional[str]:
+    """``data[0].source_organization_id``: the calling organization's
+    EndPointBlank id (sc-1571). An intake older than the field does not send
+    it, and an organization with no id there gets null; both are ``None``
+    here, silently, since neither is a broken contract."""
+    data = payload.get("data") if isinstance(payload, dict) else None
+    first = data[0] if isinstance(data, list) and data else None
+    found = first.get("source_organization_id") if isinstance(first, dict) else None
+    return found if isinstance(found, str) and found else None
 
 
 def _deprecation_from(payload) -> Optional[dict]:

@@ -397,6 +397,7 @@ class Client:
     accepted_at: Optional[str] = None
     managed: bool = False
     claimed_at: Optional[str] = None
+    owner_email: Optional[str] = None
     client_organization: Optional[OrganizationRef] = None
     invite_code: Optional[str] = field(default=None, repr=False)
     contacts: Optional[List[Contact]] = None
@@ -415,6 +416,7 @@ class Client:
             accepted_at=d.get("accepted_at"),
             managed=bool(d.get("managed")),
             claimed_at=d.get("claimed_at"),
+            owner_email=d.get("owner_email"),
             client_organization=_opt(d.get("client_organization"), OrganizationRef),
             invite_code=d.get("invite_code"),
             contacts=_list(contacts, Contact) if contacts is not None else None,
@@ -442,6 +444,31 @@ class ClaimInvite:
             email=d.get("email"),
             sent_at=d.get("sent_at"),
             expires_at=d.get("expires_at"),
+            raw=d,
+        )
+
+
+@dataclass(frozen=True)
+class PortalSession:
+    """
+    A single-use link into a managed client's EndPointBlank portal, for its
+    owner. ``url`` is a bearer secret until it expires (60 seconds after it
+    is minted), so it is left out of ``repr``.
+    """
+
+    client_id: str
+    url: Optional[str] = field(default=None, repr=False)
+    expires_at: Optional[str] = None
+    return_url: Optional[str] = None
+    raw: Dict[str, Any] = field(**_RAW)
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "PortalSession":
+        return cls(
+            client_id=d.get("client_id"),
+            url=d.get("url"),
+            expires_at=d.get("expires_at"),
+            return_url=d.get("return_url"),
             raw=d,
         )
 

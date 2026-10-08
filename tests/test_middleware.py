@@ -44,6 +44,32 @@ def test_clears_request_store_after_request():
     assert RequestStore.get() is None
 
 
+def test_a_request_arrives_with_no_caller_from_before():
+    # sc-1571: an environ that still carries an earlier authorization must
+    # not lend that caller to this request.
+    seen = []
+
+    def app(environ, start_response):
+        seen.append((
+            RequestStore.get_source_application_environment_id(),
+            RequestStore.get_source_organization_id(),
+            RequestStore.get_deprecation(),
+        ))
+        start_response("200 OK", [])
+        return [b""]
+
+    environ = make_environ()
+    environ["end_point_blank.source_application_environment_id"] = "env-stale"
+    environ["end_point_blank.source_organization_id"] = "org-stale"
+    environ["end_point_blank.deprecation"] = {"deprecated_at": "2026-01-01T00:00:00Z"}
+
+    with patch("end_point_blank.middleware.report_interaction.RequestWriter"), \
+         patch("end_point_blank.middleware.report_interaction.ResponseWriter"):
+        list(ReportInteractionMiddleware(app)(environ, lambda s, h: None))
+
+    assert seen == [(None, None, None)]
+
+
 def test_re_raises_exceptions():
     def app(environ, start_response):
         raise ValueError("Something broke")

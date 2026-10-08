@@ -55,6 +55,7 @@ from .models import (
     PackageEndpointAdded,
     Grant,
     Page,
+    PortalSession,
     ApiWarning,
 )
 
@@ -82,7 +83,8 @@ _RETRY_AFTER_FAILURE = frozenset({"GET", "DELETE", "POST"})
 _REPLAY_UNAVAILABLE_HINT = (
     " The first request with this Idempotency-Key succeeded, so it was not "
     "retried: read or list the resource to see its current state (rotate the "
-    "credential if its secret was lost)."
+    "credential if its secret was lost); for a portal session, create a new one "
+    "with a new key."
 )
 
 Params = Dict[str, Any]
@@ -795,6 +797,7 @@ class ManagementClient(_OrganizationResources):
         packages: Optional[Sequence[Mapping[str, Any]]] = None,
         grants: Optional[Sequence[Mapping[str, Any]]] = None,
         managed: Optional[bool] = None,
+        owner_email: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> Client:
         """
@@ -810,6 +813,9 @@ class ManagementClient(_OrganizationResources):
         :param managed: ``True`` creates a managed client instead (see
             :meth:`create_managed_client`); it can't come with packages or
             grants.
+        :param owner_email: With ``managed=True``, the email address of the
+            person at your customer who will own the managed client. Change it
+            later with :meth:`update_client`.
         """
         body = _compact(
             {
@@ -818,6 +824,7 @@ class ManagementClient(_OrganizationResources):
                 "packages": [dict(p) for p in packages] if packages is not None else None,
                 "grants": [dict(g) for g in grants] if grants is not None else None,
                 "managed": managed,
+                "owner_email": owner_email,
             }
         )
         return self._one(Client, "POST", "/clients", body=body, idempotency_key=idempotency_key)
@@ -827,6 +834,7 @@ class ManagementClient(_OrganizationResources):
         name: str,
         *,
         contacts: Optional[Sequence[Mapping[str, Any]]] = None,
+        owner_email: Optional[str] = None,
         idempotency_key: Optional[str] = None,
     ) -> Client:
         """
@@ -835,8 +843,22 @@ class ManagementClient(_OrganizationResources):
         claims it. Set it up with :meth:`for_managed_client`, assign it
         packages and grants like any accepted client, and invite the customer
         with :meth:`send_claim_invite`.
+
+        ``owner_email`` (optional) names the person at your customer who will
+        own it; change it later with :meth:`update_client`.
         """
-        return self.create_client(name, contacts=contacts, managed=True, idempotency_key=idempotency_key)
+        return self.create_client(
+            name, contacts=contacts, managed=True, owner_email=owner_email, idempotency_key=idempotency_key
+        )
+
+    def update_client(self, client_id: str, *, owner_email: Optional[str] = None) -> Client:
+        """
+        Updates a client (``PATCH /clients/:id``). ``owner_email`` is the email
+        address of the person at your customer who will own a managed client.
+        Not retried after a 5xx or a lost connection.
+        """
+        body = _compact({"owner_email": owner_email})
+        return self._one(Client, "PATCH", f"/clients/{_seg(client_id, 'client_id')}", body=body)
 
     def delete_client(self, client_id: str) -> Deleted:
         """Removes a client. An unclaimed managed client that still holds
@@ -863,6 +885,41 @@ class ManagementClient(_OrganizationResources):
         path = f"/clients/{_seg(client_id, 'client_id')}/claim_invites"
         body = _compact({"email": email, "return_to": return_to})
         return self._one(ClaimInvite, "POST", path, body=body, idempotency_key=idempotency_key)
+
+    def create_portal_session(
+        self,
+        client_id: str,
+        *,
+        return_url: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+    ) -> PortalSession:
+        """
+        Mints a single-use link that signs the owner of managed client
+        ``client_id`` in to its EndPointBlank portal
+        (``POST /clients/:client_id/portal_sessions``). ``return_url`` is
+        ``None`` on the answer when none was given.
+
+        The link expires 60 seconds after it is minted and works once, so mint
+        it when the user clicks and redirect their browser to it; never render
+        it into a page, log it or send it in an email. ``return_url``, when
+        given, must equal, byte for byte, a claim return URL your organization
+        registered; the portal links back to it. The request has no body
+        without it.
+
+        Each call sends a new Idempotency-Key unless you pass one, and that is
+        what you want: the answer is never replayed, so a key used before
+        raises :class:`~end_point_blank.management.errors.IdempotencyReplayUnavailableError`.
+        Never reuse a key across clicks.
+
+        Refused with ``not_found`` for a client that is not yours, and with
+        ``client_not_managed`` (not a managed client, or already claimed),
+        ``client_being_removed``, ``owner_email_missing`` (set one with
+        :meth:`update_client`) or ``return_url_not_registered`` (an empty
+        string included).
+        """
+        path = f"/clients/{_seg(client_id, 'client_id')}/portal_sessions"
+        body = {"return_url": return_url} if return_url is not None else None
+        return self._one(PortalSession, "POST", path, body=body, idempotency_key=idempotency_key)
 
     # -- package assignments -------------------------------------------------
 
