@@ -509,9 +509,11 @@ literal `$`; an out-of-range or non-participating group expands to `""`).
 Masking never raises: an uncompilable regex, a blank/malformed/unsupported path, a non-JSON body,
 or a missing/`None` field all degrade to a no-op. Stacktraces and log messages are never masked.
 
-**Credential and cookie headers are never sent.** Before any rule runs, `RequestWriter` drops
-`Authorization`, `Proxy-Authorization` and `Cookie` from the request record, and `ResponseWriter`
-drops `Set-Cookie` from the response record, whatever their letter case. They are left out of the
+**Credential and cookie headers are never sent.** Before any rule runs, `RequestWriter` and
+`ResponseWriter` drop these headers from their records, whatever their letter case:
+`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`, `Api-Key`,
+`X-Auth-Token`, `X-Access-Token`, `X-Refresh-Token`, `X-Amz-Security-Token`, `X-Csrf-Token`,
+`X-Xsrf-Token`, `X-Goog-Api-Key` and `Ocp-Apim-Subscription-Key`. They are left out of the
 record, not masked: they are not in the payload the rules and hook receive. The list is
 `SENSITIVE_HEADERS` in `end_point_blank.sensitive_headers`.
 

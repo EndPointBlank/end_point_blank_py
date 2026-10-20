@@ -287,11 +287,11 @@ class TestMasking:
 
     def test_configured_rules_are_applied_to_the_headers(self, _reset):
         _reset.masking_rules = [
-            {"target": "request_headers", "path": "$['X-Api-Key']", "replacement_value": "[redacted]"}
+            {"target": "request_headers", "path": "$['X-Customer-Id']", "replacement_value": "[redacted]"}
         ]
-        RequestStore.set(environ(HTTP_X_API_KEY="c2VjcmV0"))
+        RequestStore.set(environ(HTTP_X_CUSTOMER_ID="cust-42"))
 
-        assert write_and_capture()["headers"]["X-Api-Key"] == "[redacted]"
+        assert write_and_capture()["headers"]["X-Customer-Id"] == "[redacted]"
 
 
 class TestWriterSelection:
