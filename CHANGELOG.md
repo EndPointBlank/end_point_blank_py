@@ -1,15 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### Fixed
-
-- **API key and token headers are never sent (sc-1626).** Request and response records already
-  left out `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` (sc-1470). They now
-  also leave out `X-Api-Key`, `Api-Key`, `X-Auth-Token`, `X-Access-Token`, `X-Refresh-Token`,
-  `X-Amz-Security-Token`, `X-Csrf-Token`, `X-Xsrf-Token`, `X-Goog-Api-Key` and
-  `Ocp-Apim-Subscription-Key`, in any letter case. Every SDK and intake drop the same set.
-
 ## 0.14.0
 
 ### Added
@@ -44,6 +34,11 @@
 
 ### Fixed
 
+- **API key and token headers are never sent (sc-1626).** Request and response records already
+  left out `Authorization`, `Proxy-Authorization`, `Cookie` and `Set-Cookie` (sc-1470). They now
+  also leave out `X-Api-Key`, `Api-Key`, `X-Auth-Token`, `X-Access-Token`, `X-Refresh-Token`,
+  `X-Amz-Security-Token`, `X-Csrf-Token`, `X-Xsrf-Token`, `X-Goog-Api-Key` and
+  `Ocp-Apim-Subscription-Key`, in any letter case. Every SDK and intake drop the same set.
 - **A failed authorization no longer leaves an earlier caller in the `RequestStore`.**
   `EndpointAuthorize.authorize` clears the source environment id, organization id and
   deprecation before it asks, and `RequestStore.set` (which both middlewares call when a request
